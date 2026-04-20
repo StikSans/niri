@@ -278,6 +278,15 @@ pub enum ScrollDirection {
     Right,
 }
 
+/// A direction on the 2D canvas used for spatial focus navigation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpatialDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
 #[derive(Debug)]
 struct MoveAnimation {
     anim: Animation,
@@ -1573,6 +1582,65 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
         self.activate_column(self.active_column_idx - 1);
         true
+    }
+
+    /// Move focus to the nearest tile in the given canvas direction.
+    ///
+    /// Uses each tile's 2D canvas AABB: candidates are scored by `primary + 2 * |perpendicular|`
+    /// where *primary* is the signed distance along the target axis (must be positive) and
+    /// *perpendicular* is the drift across it. Returns `true` if focus moved.
+    pub fn focus_spatial(&mut self, direction: SpatialDirection) -> bool {
+        if self.columns.is_empty() {
+            return false;
+        }
+
+        let active_id = self.active_window().map(|w| w.id().clone());
+        let Some(active_id) = active_id else {
+            return false;
+        };
+
+        // Collect (window_id, center_x, center_y) for every tile. Canvas position is derived
+        // inline from `col_x + tile_off` so we don't depend on the cached `canvas_pos`.
+        let mut active_center: Option<(f64, f64)> = None;
+        let mut candidates: Vec<(W::Id, f64, f64)> = Vec::new();
+        for (col, col_x) in zip(&self.columns, self.column_xs(self.data.iter().copied())) {
+            for (tile, tile_off) in col.tiles() {
+                let size = tile.tile_size();
+                let cx = col_x + tile_off.x + size.w / 2.;
+                let cy = tile_off.y + size.h / 2.;
+                if tile.window().id() == &active_id {
+                    active_center = Some((cx, cy));
+                } else {
+                    candidates.push((tile.window().id().clone(), cx, cy));
+                }
+            }
+        }
+
+        let Some((ax, ay)) = active_center else {
+            return false;
+        };
+
+        let mut best: Option<(f64, W::Id)> = None;
+        for (id, cx, cy) in candidates {
+            let dx = cx - ax;
+            let dy = cy - ay;
+            let score = match direction {
+                SpatialDirection::Right if dx > 0. => dx + 2. * dy.abs(),
+                SpatialDirection::Left if dx < 0. => -dx + 2. * dy.abs(),
+                SpatialDirection::Down if dy > 0. => dy + 2. * dx.abs(),
+                SpatialDirection::Up if dy < 0. => -dy + 2. * dx.abs(),
+                _ => continue,
+            };
+            if best.as_ref().is_none_or(|(s, _)| score < *s) {
+                best = Some((score, id));
+            }
+        }
+
+        if let Some((_, target)) = best {
+            self.activate_window(&target)
+        } else {
+            false
+        }
     }
 
     pub fn focus_right(&mut self) -> bool {

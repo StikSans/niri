@@ -57,7 +57,7 @@ use self::monitor::{Monitor, WorkspaceSwitch};
 use self::workspace::{OutputId, Workspace};
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
-use crate::layout::scrolling::ScrollDirection;
+use crate::layout::scrolling::{ScrollDirection, SpatialDirection};
 use crate::niri_render_elements;
 use crate::render_helpers::background_effect::BackgroundEffectElement;
 use crate::render_helpers::offscreen::OffscreenData;
@@ -1938,6 +1938,16 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
         workspace.focus_right();
+    }
+
+    /// Move focus to the nearest window in the given 2D canvas direction.
+    ///
+    /// Returns true if focus changed.
+    pub fn focus_spatial(&mut self, direction: SpatialDirection) -> bool {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return false;
+        };
+        workspace.focus_spatial(direction)
     }
 
     pub fn focus_column_first(&mut self) {

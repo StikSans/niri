@@ -475,6 +475,10 @@ enum Op {
     FocusColumnOrMonitorRight(#[proptest(strategy = "1..=2u8")] u8),
     FocusWindowDown,
     FocusWindowUp,
+    FocusSpatialLeft,
+    FocusSpatialRight,
+    FocusSpatialUp,
+    FocusSpatialDown,
     FocusWindowDownOrColumnLeft,
     FocusWindowDownOrColumnRight,
     FocusWindowUpOrColumnLeft,
@@ -1123,6 +1127,18 @@ impl Op {
             }
             Op::FocusWindowDown => layout.focus_down(),
             Op::FocusWindowUp => layout.focus_up(),
+            Op::FocusSpatialLeft => {
+                layout.focus_spatial(SpatialDirection::Left);
+            }
+            Op::FocusSpatialRight => {
+                layout.focus_spatial(SpatialDirection::Right);
+            }
+            Op::FocusSpatialUp => {
+                layout.focus_spatial(SpatialDirection::Up);
+            }
+            Op::FocusSpatialDown => {
+                layout.focus_spatial(SpatialDirection::Down);
+            }
             Op::FocusWindowDownOrColumnLeft => layout.focus_down_or_left(),
             Op::FocusWindowDownOrColumnRight => layout.focus_down_or_right(),
             Op::FocusWindowUpOrColumnLeft => layout.focus_up_or_left(),
@@ -2036,6 +2052,82 @@ fn floating_canvas_pos_matches_logical_pos_after_update() {
         }
     }
     assert!(saw_floating, "expected at least one floating tile");
+}
+
+#[test]
+fn spatial_focus_picks_nearest_neighbor() {
+    // Build a 2x2 grid: two columns, two tiles each. Ids 0,1 in column 1; 2,3 in column 2.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(0),
+    }
+    .apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(1),
+    }
+    .apply(&mut layout);
+    Op::ConsumeOrExpelWindowLeft { id: None }.apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(2),
+    }
+    .apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(3),
+    }
+    .apply(&mut layout);
+    Op::ConsumeOrExpelWindowLeft { id: None }.apply(&mut layout);
+
+    let active_id = |layout: &Layout<TestWindow>| {
+        *layout
+            .active_workspace()
+            .unwrap()
+            .scrolling()
+            .active_window()
+            .unwrap()
+            .id()
+    };
+
+    // Start at the top of column 2 (id=2).
+    Op::FocusColumn(2).apply(&mut layout);
+    Op::FocusWindowInColumn(1).apply(&mut layout);
+    assert_eq!(active_id(&layout), 2);
+
+    // Left: should land on top of column 1 (id=0).
+    Op::FocusSpatialLeft.apply(&mut layout);
+    assert_eq!(active_id(&layout), 0);
+
+    // Down: should land on bottom of column 1 (id=1).
+    Op::FocusSpatialDown.apply(&mut layout);
+    assert_eq!(active_id(&layout), 1);
+
+    // Right: should land on bottom of column 2 (id=3).
+    Op::FocusSpatialRight.apply(&mut layout);
+    assert_eq!(active_id(&layout), 3);
+
+    // Up: should land on top of column 2 (id=2).
+    Op::FocusSpatialUp.apply(&mut layout);
+    assert_eq!(active_id(&layout), 2);
+}
+
+#[test]
+fn spatial_focus_is_noop_on_edges() {
+    // Single window: no neighbor in any direction.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(0),
+    }
+    .apply(&mut layout);
+
+    for dir in [
+        SpatialDirection::Left,
+        SpatialDirection::Right,
+        SpatialDirection::Up,
+        SpatialDirection::Down,
+    ] {
+        assert!(!layout.focus_spatial(dir), "dir = {dir:?}");
+    }
 }
 
 #[test]

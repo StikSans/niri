@@ -20,6 +20,7 @@ use smithay::wayland::shell::xdg::SurfaceCachedState;
 use super::floating::{FloatingSpace, FloatingSpaceRenderElement};
 use super::scrolling::{
     Column, ColumnWidth, ScrollDirection, ScrollingSpace, ScrollingSpaceRenderElement,
+    SpatialDirection,
 };
 use super::shadow::Shadow;
 use super::tile::{Tile, TileRenderSnapshot};
@@ -977,6 +978,17 @@ impl<W: LayoutElement> Workspace<W> {
         } else {
             self.scrolling.focus_up()
         }
+    }
+
+    /// Move focus to the nearest tile in the given 2D canvas direction.
+    ///
+    /// Currently only applies to the scrolling space; floating windows keep their existing
+    /// stacking-order navigation until canvas placement lands there too.
+    pub fn focus_spatial(&mut self, direction: SpatialDirection) -> bool {
+        if self.floating_is_active.get() {
+            return false;
+        }
+        self.scrolling.focus_spatial(direction)
     }
 
     pub fn focus_down_or_left(&mut self) {

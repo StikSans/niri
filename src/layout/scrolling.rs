@@ -2397,15 +2397,20 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> {
         let scale = self.scale;
-        let view_off = Point::from((-self.view_pos(), 0.));
+        let view_pos = self.view_pos();
         self.columns_in_render_order()
             .flat_map(move |(col, col_x)| {
-                let col_off = Point::from((col_x, 0.));
                 let col_render_off = col.render_offset();
                 col.tiles_in_render_order()
                     .map(move |(tile, tile_off, visible)| {
+                        // Canvas position derived inline: `col_x + tile_off` is this tile's 2D
+                        // canvas coordinate. screen_pos = canvas_pos - camera + animation offsets.
+                        let canvas =
+                            Point::<f64, Canvas>::from((col_x + tile_off.x, tile_off.y));
                         let pos =
-                            view_off + col_off + col_render_off + tile_off + tile.render_offset();
+                            Self::canvas_to_screen_base(canvas, view_pos)
+                                + col_render_off
+                                + tile.render_offset();
                         // Round to physical pixels.
                         let pos = pos.to_physical_precise_round(scale).to_logical(scale);
                         (tile, pos, visible)
@@ -2418,15 +2423,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         round: bool,
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> {
         let scale = self.scale;
-        let view_off = Point::from((-self.view_pos(), 0.));
+        let view_pos = self.view_pos();
         self.columns_in_render_order_mut()
             .flat_map(move |(col, col_x)| {
-                let col_off = Point::from((col_x, 0.));
                 let col_render_off = col.render_offset();
                 col.tiles_in_render_order_mut()
                     .map(move |(tile, tile_off)| {
-                        let mut pos =
-                            view_off + col_off + col_render_off + tile_off + tile.render_offset();
+                        let canvas =
+                            Point::<f64, Canvas>::from((col_x + tile_off.x, tile_off.y));
+                        let mut pos = ScrollingSpace::<W>::canvas_to_screen_base(canvas, view_pos)
+                            + col_render_off
+                            + tile.render_offset();
                         // Round to physical pixels.
                         if round {
                             pos = pos.to_physical_precise_round(scale).to_logical(scale);
@@ -2434,6 +2441,19 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                         (tile, pos)
                     })
             })
+    }
+
+    /// Transform a canvas-space position into the static part of its screen-space position.
+    ///
+    /// Static here means: ignoring per-column and per-tile animation offsets (those are
+    /// overlaid separately by the render iterators). Right now the camera is purely horizontal
+    /// (`view_pos`); a future 2D camera will add a Y component, and this is the single point to
+    /// update when that lands.
+    pub(super) fn canvas_to_screen_base(
+        canvas: Point<f64, Canvas>,
+        view_pos: f64,
+    ) -> Point<f64, Logical> {
+        Point::<f64, Logical>::from((canvas.x - view_pos, canvas.y))
     }
 
     pub fn tiles_with_ipc_layouts(&self) -> impl Iterator<Item = (&Tile<W>, WindowLayout)> {

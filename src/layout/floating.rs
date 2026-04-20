@@ -317,6 +317,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> {
         let scale = self.scale;
         self.tiles_with_offsets().map(move |(tile, offset)| {
+            // Floating logical_pos IS the tile's canvas coordinate (see update_canvas_positions).
+            // Kept as `offset` here to preserve the eager-sync behavior — `data.logical_pos` is
+            // updated synchronously on every floating mutation, while `tile.canvas_pos` only
+            // syncs at render time.
             let pos = offset + tile.render_offset();
             // Round to physical pixels.
             let pos = pos.to_physical_precise_round(scale).to_logical(scale);

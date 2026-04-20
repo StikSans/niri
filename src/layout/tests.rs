@@ -1953,6 +1953,58 @@ fn operations_from_starting_state_dont_panic() {
 }
 
 #[test]
+fn canvas_pos_matches_render_pos_after_update() {
+    use approx::assert_abs_diff_eq;
+
+    // Invariant for Phase 0b of the 2D canvas migration:
+    // after `update_render_elements()`, every scrolling-space tile's `canvas_pos` equals its
+    // rendered `screen_pos + view_pos`, provided there are no column/tile render_offset
+    // animations (which is the case immediately after AddWindow on a fresh layout).
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(0),
+    }
+    .apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(1),
+    }
+    .apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(2),
+    }
+    .apply(&mut layout);
+
+    layout.update_render_elements(None);
+
+    for (_, _, ws) in layout.workspaces() {
+        let scrolling = ws.scrolling();
+        let view_pos = Point::<f64, Logical>::from((scrolling.view_pos(), 0.));
+
+        // Precondition: no animation offsets on columns or tiles.
+        for col in scrolling.columns() {
+            let off = col.render_offset();
+            assert_abs_diff_eq!(off.x, 0., epsilon = 1e-5);
+            assert_abs_diff_eq!(off.y, 0., epsilon = 1e-5);
+        }
+
+        for (tile, screen_pos, _visible) in scrolling.tiles_with_render_positions() {
+            let off = tile.render_offset();
+            assert_abs_diff_eq!(off.x, 0., epsilon = 1e-5);
+            assert_abs_diff_eq!(off.y, 0., epsilon = 1e-5);
+
+            let expected = screen_pos + view_pos;
+            let canvas = tile.canvas_pos();
+
+            // Epsilon 0.5: the rendered position is rounded to physical pixels, but
+            // canvas_pos is stored pre-rounding. They agree up to that rounding step.
+            assert_abs_diff_eq!(canvas.x, expected.x, epsilon = 0.5);
+            assert_abs_diff_eq!(canvas.y, expected.y, epsilon = 0.5);
+        }
+    }
+}
+
+#[test]
 fn primary_active_workspace_idx_not_updated_on_output_add() {
     let ops = [
         Op::AddOutput(1),

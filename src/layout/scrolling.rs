@@ -15,7 +15,9 @@ use super::monitor::InsertPosition;
 use super::tab_indicator::{TabIndicator, TabIndicatorRenderElement, TabInfo};
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::{InteractiveResize, ResolvedSize};
-use super::{ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, Options, RemovedTile};
+use super::{
+    Canvas, ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, Options, RemovedTile,
+};
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::SizingMode;
@@ -397,6 +399,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn update_render_elements(&mut self, is_active: bool) {
+        // Keep tile canvas positions in sync with the scrolling-space layout. Once the 2D canvas
+        // migration completes, `canvas_pos` will be the source of truth and we'll compute screen
+        // positions from it; during the transition it mirrors the per-column/per-tile offsets.
+        self.update_canvas_positions();
+
         let view_pos = Point::from((self.view_pos(), 0.));
         let view_size = self.view_size;
         let active_idx = self.active_column_idx;
@@ -406,6 +413,18 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let col_pos = view_pos - col_off - col.render_offset();
             let view_rect = Rectangle::new(col_pos, view_size);
             col.update_render_elements(is_active, view_rect);
+        }
+    }
+
+    /// Writes the canonical canvas position into every tile.
+    ///
+    /// The canonical position is `column_x + tile_offset_within_column`, i.e. the stable part of
+    /// the tile's layout *without* any animation render offsets and *without* the view offset.
+    /// Combined with `-view_pos`, `column.render_offset()`, and `tile.render_offset()`, this
+    /// reproduces the current screen position used by `tiles_with_render_positions`.
+    pub fn update_canvas_positions(&mut self) {
+        for (col, col_x) in self.columns_mut() {
+            col.update_canvas_positions(col_x);
         }
     }
 
@@ -5267,6 +5286,18 @@ impl<W: LayoutElement> Column<W> {
     fn tiles_mut(&mut self) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
         let offsets = self.tile_offsets_iter(self.data.iter().copied());
         zip(&mut self.tiles, offsets)
+    }
+
+    /// Writes canonical canvas positions into every tile in this column.
+    ///
+    /// `col_x` is the column's x-offset within the scrolling space (as produced by
+    /// `ScrollingSpace::column_xs`). The tile's canvas position is `col_x + tile_offset`, which
+    /// is stable w.r.t. view scroll and animation render offsets.
+    pub(super) fn update_canvas_positions(&mut self, col_x: f64) {
+        for (tile, tile_off) in self.tiles_mut() {
+            let pos = Point::<f64, Canvas>::from((col_x + tile_off.x, tile_off.y));
+            tile.set_canvas_pos(pos);
+        }
     }
 
     fn tiles_in_render_order(

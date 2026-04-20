@@ -366,6 +366,14 @@ pub enum Action {
     FocusWindowDown {},
     /// Focus the window above.
     FocusWindowUp {},
+    /// Focus the nearest window to the left by 2D canvas position.
+    FocusSpatialLeft {},
+    /// Focus the nearest window to the right by 2D canvas position.
+    FocusSpatialRight {},
+    /// Focus the nearest window above by 2D canvas position.
+    FocusSpatialUp {},
+    /// Focus the nearest window below by 2D canvas position.
+    FocusSpatialDown {},
     /// Focus the window below or the column to the left.
     FocusWindowDownOrColumnLeft {},
     /// Focus the window below or the column to the right.

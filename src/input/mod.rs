@@ -47,7 +47,7 @@ use self::resize_grab::ResizeGrab;
 use self::spatial_movement_grab::SpatialMovementGrab;
 #[cfg(feature = "dbus")]
 use crate::dbus::freedesktop_a11y::KbMonBlock;
-use crate::layout::scrolling::ScrollDirection;
+use crate::layout::scrolling::{ScrollDirection, SpatialDirection};
 use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
@@ -1198,6 +1198,34 @@ impl State {
             }
             Action::FocusWindowUp => {
                 self.niri.layout.focus_up();
+                self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::FocusSpatialLeft => {
+                self.niri.layout.focus_spatial(SpatialDirection::Left);
+                self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::FocusSpatialRight => {
+                self.niri.layout.focus_spatial(SpatialDirection::Right);
+                self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::FocusSpatialUp => {
+                self.niri.layout.focus_spatial(SpatialDirection::Up);
+                self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::FocusSpatialDown => {
+                self.niri.layout.focus_spatial(SpatialDirection::Down);
                 self.maybe_warp_cursor_to_focus();
                 self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular

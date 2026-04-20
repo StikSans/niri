@@ -3777,7 +3777,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         if !self.columns.is_empty() {
             assert!(self.active_column_idx < self.columns.len());
 
-            for (column, data) in zip(&self.columns, &self.data) {
+            // Canonical canvas positions by column + tile offset. Recomputed here, from the same
+            // formula that `update_canvas_positions` writes, so that every tile's stored
+            // `canvas_pos` can be cross-checked. This relies on the caller having synced
+            // canvas positions before invariant verification (see `Layout::sync_canvas_positions`).
+            let col_xs: Vec<f64> = self
+                .column_xs(self.data.iter().copied())
+                .take(self.columns.len())
+                .collect();
+
+            for ((column, data), col_x) in zip(zip(&self.columns, &self.data), col_xs) {
                 assert!(Rc::ptr_eq(&self.options, &column.options));
                 assert_eq!(self.clock, column.clock);
                 assert_eq!(self.scale, column.scale);
@@ -3786,6 +3795,18 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let mut data2 = *data;
                 data2.update(column);
                 assert_eq!(data, &data2, "column data must be up to date");
+
+                for (tile, tile_off) in column.tiles() {
+                    let expected = Point::<f64, Canvas>::from((col_x + tile_off.x, tile_off.y));
+                    let actual = tile.canvas_pos();
+                    let dx = (expected.x - actual.x).abs();
+                    let dy = (expected.y - actual.y).abs();
+                    assert!(
+                        dx < 1e-5 && dy < 1e-5,
+                        "tile canvas_pos out of sync: expected {expected:?}, got {actual:?} \
+                         (call Layout::sync_canvas_positions before verify_invariants)",
+                    );
+                }
             }
 
             let col = &self.columns[self.active_column_idx];

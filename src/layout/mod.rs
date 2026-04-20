@@ -4988,6 +4988,19 @@ impl<W: LayoutElement> Layout<W> {
         iter_normal.chain(iter_no_outputs)
     }
 
+    /// Refresh `canvas_pos` on every scrolling-space tile.
+    ///
+    /// Production code sees this run as part of `update_render_elements`; tests that want to
+    /// inspect or verify canvas positions between mutations (without paying for a full render
+    /// pass) can call this directly. Called from `check_ops_on_layout` so that
+    /// `verify_invariants` sees up-to-date canvas positions after every operation.
+    #[cfg(test)]
+    pub fn sync_canvas_positions(&mut self) {
+        for ws in self.workspaces_mut() {
+            ws.scrolling_mut().update_canvas_positions();
+        }
+    }
+
     pub fn windows(&self) -> impl Iterator<Item = (Option<&Monitor<W>>, &W)> {
         let moving_window = self
             .interactive_move

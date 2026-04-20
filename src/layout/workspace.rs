@@ -1983,6 +1983,11 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     #[cfg(test)]
+    pub fn scrolling_mut(&mut self) -> &mut ScrollingSpace<W> {
+        &mut self.scrolling
+    }
+
+    #[cfg(test)]
     pub fn floating(&self) -> &FloatingSpace<W> {
         &self.floating
     }

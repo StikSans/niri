@@ -1633,6 +1633,7 @@ impl Op {
 fn check_ops_on_layout(layout: &mut Layout<TestWindow>, ops: impl IntoIterator<Item = Op>) {
     for op in ops {
         op.apply(layout);
+        layout.sync_canvas_positions();
         layout.verify_invariants();
     }
 }
@@ -2455,6 +2456,7 @@ fn config_change_updates_cached_sizes() {
     config.layout.border.width = 4.;
     layout.update_config(&config);
 
+    layout.sync_canvas_positions();
     layout.verify_invariants();
 }
 
@@ -2486,6 +2488,7 @@ fn preset_height_change_removes_preset() {
 
     layout.update_config(&config);
 
+    layout.sync_canvas_positions();
     layout.verify_invariants();
 }
 

@@ -110,6 +110,13 @@ const OVERVIEW_GESTURE_RUBBER_BAND: RubberBand = RubberBand {
 /// Size-relative units.
 pub struct SizeFrac;
 
+/// 2D canvas coordinate space.
+///
+/// Positions in this space are the source of truth for where a tile lives. Screen positions are
+/// derived per-monitor as `canvas_to_screen(canvas_pos)` using the monitor's camera. This space is
+/// independent of any output's size, scale, or connect/disconnect state.
+pub struct Canvas;
+
 niri_render_elements! {
     LayoutElementRenderElement<R> => {
         Wayland = WaylandSurfaceRenderElement<R>,

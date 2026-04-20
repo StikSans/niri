@@ -12,8 +12,8 @@ use super::focus_ring::{FocusRing, FocusRingRenderElement};
 use super::opening_window::{OpenAnimation, OpeningWindowRenderElement};
 use super::shadow::Shadow;
 use super::{
-    HitType, LayoutElement, LayoutElementRenderElement, LayoutElementRenderSnapshot, Options,
-    SizeFrac, RESIZE_ANIMATION_THRESHOLD,
+    Canvas, HitType, LayoutElement, LayoutElementRenderElement, LayoutElementRenderSnapshot,
+    Options, SizeFrac, RESIZE_ANIMATION_THRESHOLD,
 };
 use crate::animation::{Animation, Clock};
 use crate::layout::SizingMode;
@@ -40,6 +40,13 @@ use crate::utils::{
 pub struct Tile<W: LayoutElement> {
     /// The toplevel window itself.
     window: W,
+
+    /// Position of this tile's visual geometry top-left corner in 2D canvas space.
+    ///
+    /// Not yet authoritative: during the scrolling-tiling phase it is kept in sync with the
+    /// position derived from column/row logic. Once the 2D canvas layout lands, all screen
+    /// positions will be computed from this field via a per-monitor camera transform.
+    canvas_pos: Point<f64, Canvas>,
 
     /// The border around the window.
     border: FocusRing,
@@ -190,6 +197,7 @@ impl<W: LayoutElement> Tile<W> {
 
         Self {
             window,
+            canvas_pos: Point::from((0., 0.)),
             border: FocusRing::new(border_config.into()),
             focus_ring: FocusRing::new(focus_ring_config),
             shadow: Shadow::new(shadow_config),
@@ -670,6 +678,14 @@ impl<W: LayoutElement> Tile<W> {
 
     pub fn window_mut(&mut self) -> &mut W {
         &mut self.window
+    }
+
+    pub fn canvas_pos(&self) -> Point<f64, Canvas> {
+        self.canvas_pos
+    }
+
+    pub fn set_canvas_pos(&mut self, pos: Point<f64, Canvas>) {
+        self.canvas_pos = pos;
     }
 
     pub fn sizing_mode(&self) -> SizingMode {

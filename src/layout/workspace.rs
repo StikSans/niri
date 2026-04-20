@@ -982,13 +982,72 @@ impl<W: LayoutElement> Workspace<W> {
 
     /// Move focus to the nearest tile in the given 2D canvas direction.
     ///
-    /// Currently only applies to the scrolling space; floating windows keep their existing
-    /// stacking-order navigation until canvas placement lands there too.
+    /// Considers both scrolling and (when visible) floating tiles, scoring them in canvas space
+    /// (stable regardless of view_pos and animations). The target tile is activated in its own
+    /// space; focus may cross the floating/scrolling boundary.
     pub fn focus_spatial(&mut self, direction: SpatialDirection) -> bool {
-        if self.floating_is_active.get() {
+        let Some(active_id) = self.active_window().map(|w| w.id().clone()) else {
             return false;
+        };
+
+        let mut active_center: Option<(f64, f64)> = None;
+        let mut candidates: Vec<(bool, W::Id, f64, f64)> = Vec::new();
+
+        for (tile, canvas) in self.scrolling.tiles_with_canvas_positions() {
+            let size = tile.tile_size();
+            let cx = canvas.x + size.w / 2.;
+            let cy = canvas.y + size.h / 2.;
+            if tile.window().id() == &active_id {
+                active_center = Some((cx, cy));
+            } else {
+                candidates.push((false, tile.window().id().clone(), cx, cy));
+            }
         }
-        self.scrolling.focus_spatial(direction)
+
+        if self.is_floating_visible() {
+            for (tile, offset) in self.floating.tiles_with_offsets() {
+                let size = tile.tile_size();
+                let cx = offset.x + size.w / 2.;
+                let cy = offset.y + size.h / 2.;
+                if tile.window().id() == &active_id {
+                    active_center = Some((cx, cy));
+                } else {
+                    candidates.push((true, tile.window().id().clone(), cx, cy));
+                }
+            }
+        }
+
+        let Some((ax, ay)) = active_center else {
+            return false;
+        };
+
+        let mut best: Option<(f64, bool, W::Id)> = None;
+        for (is_floating, id, cx, cy) in candidates {
+            let dx = cx - ax;
+            let dy = cy - ay;
+            let score = match direction {
+                SpatialDirection::Right if dx > 0. => dx + 2. * dy.abs(),
+                SpatialDirection::Left if dx < 0. => -dx + 2. * dy.abs(),
+                SpatialDirection::Down if dy > 0. => dy + 2. * dx.abs(),
+                SpatialDirection::Up if dy < 0. => -dy + 2. * dx.abs(),
+                _ => continue,
+            };
+            if best.as_ref().is_none_or(|(s, _, _)| score < *s) {
+                best = Some((score, is_floating, id));
+            }
+        }
+
+        match best {
+            Some((_, true, id)) => {
+                self.focus_floating();
+                self.floating.activate_window(&id)
+            }
+            Some((_, false, id)) => {
+                self.focus_tiling();
+                self.scrolling.activate_window(&id)
+            }
+            None => false,
+        }
     }
 
     pub fn focus_down_or_left(&mut self) {

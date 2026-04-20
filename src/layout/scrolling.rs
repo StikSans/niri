@@ -2511,6 +2511,23 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             })
     }
 
+    /// Iterate over tiles with their canvas-space positions.
+    ///
+    /// Unlike `tiles_with_render_positions`, this ignores the camera, animation render offsets,
+    /// and rounding — it returns each tile's stable 2D canvas coordinate. Useful for spatial
+    /// reasoning (e.g. finding the nearest neighbor in a given direction) that must not flicker
+    /// while the view is animating.
+    pub fn tiles_with_canvas_positions(
+        &self,
+    ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Canvas>)> + '_ {
+        self.columns_in_render_order().flat_map(|(col, col_x)| {
+            col.tiles_in_render_order().map(move |(tile, tile_off, _)| {
+                let canvas = Point::<f64, Canvas>::from((col_x + tile_off.x, tile_off.y));
+                (tile, canvas)
+            })
+        })
+    }
+
     /// Transform a canvas-space position into the static part of its screen-space position.
     ///
     /// Static here means: ignoring per-column and per-tile animation offsets (those are

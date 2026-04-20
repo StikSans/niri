@@ -4988,7 +4988,7 @@ impl<W: LayoutElement> Layout<W> {
         iter_normal.chain(iter_no_outputs)
     }
 
-    /// Refresh `canvas_pos` on every scrolling-space tile.
+    /// Refresh `canvas_pos` on every tile (scrolling and floating).
     ///
     /// Production code sees this run as part of `update_render_elements`; tests that want to
     /// inspect or verify canvas positions between mutations (without paying for a full render
@@ -4998,6 +4998,7 @@ impl<W: LayoutElement> Layout<W> {
     pub fn sync_canvas_positions(&mut self) {
         for ws in self.workspaces_mut() {
             ws.scrolling_mut().update_canvas_positions();
+            ws.floating_mut().update_canvas_positions();
         }
     }
 

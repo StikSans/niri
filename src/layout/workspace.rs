@@ -1993,6 +1993,11 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     #[cfg(test)]
+    pub fn floating_mut(&mut self) -> &mut FloatingSpace<W> {
+        &mut self.floating
+    }
+
+    #[cfg(test)]
     pub fn verify_invariants(&self, move_win_id: Option<&W::Id>) {
         use approx::assert_abs_diff_eq;
 

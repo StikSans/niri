@@ -2006,6 +2006,39 @@ fn canvas_pos_matches_render_pos_after_update() {
 }
 
 #[test]
+fn floating_canvas_pos_matches_logical_pos_after_update() {
+    use approx::assert_abs_diff_eq;
+
+    // Phase 0d invariant: after update_render_elements, every floating tile's canvas_pos equals
+    // its stored floating logical_pos.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(0),
+    }
+    .apply(&mut layout);
+    Op::ToggleWindowFloating { id: Some(0) }.apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(1),
+    }
+    .apply(&mut layout);
+    Op::ToggleWindowFloating { id: Some(1) }.apply(&mut layout);
+
+    layout.update_render_elements(None);
+
+    let mut saw_floating = false;
+    for (_, _, ws) in layout.workspaces() {
+        for (tile, logical_pos) in ws.floating().tiles_with_offsets() {
+            saw_floating = true;
+            let canvas = tile.canvas_pos();
+            assert_abs_diff_eq!(canvas.x, logical_pos.x, epsilon = 1e-5);
+            assert_abs_diff_eq!(canvas.y, logical_pos.y, epsilon = 1e-5);
+        }
+    }
+    assert!(saw_floating, "expected at least one floating tile");
+}
+
+#[test]
 fn primary_active_workspace_idx_not_updated_on_output_add() {
     let ops = [
         Op::AddOutput(1),

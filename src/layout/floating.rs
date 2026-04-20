@@ -13,7 +13,7 @@ use super::scrolling::ColumnWidth;
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{
-    ConfigureIntent, InteractiveResizeData, LayoutElement, Options, RemovedTile, SizeFrac,
+    Canvas, ConfigureIntent, InteractiveResizeData, LayoutElement, Options, RemovedTile, SizeFrac,
 };
 use crate::animation::{Animation, Clock};
 use crate::niri_render_elements;
@@ -266,6 +266,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     pub fn update_render_elements(&mut self, is_active: bool, view_rect: Rectangle<f64, Logical>) {
+        self.update_canvas_positions();
+
         let active = self.active_window_id.clone();
         for (tile, offset) in self.tiles_with_offsets_mut() {
             let id = tile.window().id();
@@ -274,6 +276,19 @@ impl<W: LayoutElement> FloatingSpace<W> {
             let mut tile_view_rect = view_rect;
             tile_view_rect.loc -= offset + tile.render_offset();
             tile.update_render_elements(is_active, tile_view_rect);
+        }
+    }
+
+    /// Copy each tile's floating `logical_pos` into its `canvas_pos` slot.
+    ///
+    /// Floating positions are already absolute per-workspace coordinates, so the canvas mapping is
+    /// a straight pass-through (for now). During the 2D-canvas migration these will become the
+    /// tile's authoritative position; today this keeps the `canvas_pos` field consistent so shared
+    /// invariants on `Tile<W>` hold regardless of which space owns a given tile.
+    pub fn update_canvas_positions(&mut self) {
+        for (tile, data) in zip(&mut self.tiles, &self.data) {
+            let pos = Point::<f64, Canvas>::from((data.logical_pos.x, data.logical_pos.y));
+            tile.set_canvas_pos(pos);
         }
     }
 
@@ -1363,6 +1378,17 @@ impl<W: LayoutElement> FloatingSpace<W> {
             data2.update(tile);
             data2.update_config(self.working_area);
             assert_eq!(data, &data2, "tile data must be up to date");
+
+            let expected =
+                Point::<f64, Canvas>::from((data.logical_pos.x, data.logical_pos.y));
+            let actual = tile.canvas_pos();
+            let dx = (expected.x - actual.x).abs();
+            let dy = (expected.y - actual.y).abs();
+            assert!(
+                dx < 1e-5 && dy < 1e-5,
+                "floating tile canvas_pos out of sync: expected {expected:?}, got {actual:?} \
+                 (call Layout::sync_canvas_positions before verify_invariants)",
+            );
 
             for tile_below in &self.tiles[i + 1..] {
                 assert!(

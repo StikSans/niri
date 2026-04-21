@@ -170,6 +170,18 @@ impl<W: LayoutElement> CanvasSpace<W> {
             .map(Tile::window)
     }
 
+    pub fn active_window_mut(&mut self) -> Option<&mut W> {
+        let id = self.active_id.clone()?;
+        self.tiles
+            .iter_mut()
+            .find(|t| t.window().id() == &id)
+            .map(Tile::window_mut)
+    }
+
+    pub fn active_window_id(&self) -> Option<&W::Id> {
+        self.active_id.as_ref()
+    }
+
     /// Activate the tile with the given id. Returns true if the id matched a tile.
     pub fn activate_window(&mut self, id: &W::Id) -> bool {
         if self.tiles.iter().any(|t| t.window().id() == id) {

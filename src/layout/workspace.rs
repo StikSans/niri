@@ -538,6 +538,8 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn active_window(&self) -> Option<&W> {
         if self.floating_is_active.get() {
             self.floating.active_window()
+        } else if self.canvas_mode {
+            self.canvas.active_window()
         } else {
             self.scrolling.active_window()
         }
@@ -546,6 +548,8 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn active_window_mut(&mut self) -> Option<&mut W> {
         if self.floating_is_active.get() {
             self.floating.active_window_mut()
+        } else if self.canvas_mode {
+            self.canvas.active_window_mut()
         } else {
             self.scrolling.active_window_mut()
         }
@@ -1079,16 +1083,23 @@ impl<W: LayoutElement> Workspace<W> {
 
     /// Move focus to the nearest tile in the given 2D canvas direction.
     ///
-    /// Considers both scrolling and (when visible) floating tiles, scoring them in canvas space
-    /// (stable regardless of view_pos and animations). The target tile is activated in its own
-    /// space; focus may cross the floating/scrolling boundary.
+    /// Considers scrolling, canvas (when canvas_mode is on), and floating (when visible) tiles,
+    /// scoring them in canvas space (stable regardless of view_pos and animations). The target
+    /// tile is activated in its own space; focus may cross space boundaries.
     pub fn focus_spatial(&mut self, direction: SpatialDirection) -> bool {
+        #[derive(Clone, Copy)]
+        enum SpaceTag {
+            Scrolling,
+            Floating,
+            Canvas,
+        }
+
         let Some(active_id) = self.active_window().map(|w| w.id().clone()) else {
             return false;
         };
 
         let mut active_center: Option<(f64, f64)> = None;
-        let mut candidates: Vec<(bool, W::Id, f64, f64)> = Vec::new();
+        let mut candidates: Vec<(SpaceTag, W::Id, f64, f64)> = Vec::new();
 
         for (tile, canvas) in self.scrolling.tiles_with_canvas_positions() {
             let size = tile.tile_size();
@@ -1097,7 +1108,7 @@ impl<W: LayoutElement> Workspace<W> {
             if tile.window().id() == &active_id {
                 active_center = Some((cx, cy));
             } else {
-                candidates.push((false, tile.window().id().clone(), cx, cy));
+                candidates.push((SpaceTag::Scrolling, tile.window().id().clone(), cx, cy));
             }
         }
 
@@ -1109,7 +1120,20 @@ impl<W: LayoutElement> Workspace<W> {
                 if tile.window().id() == &active_id {
                     active_center = Some((cx, cy));
                 } else {
-                    candidates.push((true, tile.window().id().clone(), cx, cy));
+                    candidates.push((SpaceTag::Floating, tile.window().id().clone(), cx, cy));
+                }
+            }
+        }
+
+        if self.canvas_mode {
+            for (tile, canvas) in self.canvas.tiles_with_canvas_positions() {
+                let size = tile.tile_size();
+                let cx = canvas.x + size.w / 2.;
+                let cy = canvas.y + size.h / 2.;
+                if tile.window().id() == &active_id {
+                    active_center = Some((cx, cy));
+                } else {
+                    candidates.push((SpaceTag::Canvas, tile.window().id().clone(), cx, cy));
                 }
             }
         }
@@ -1118,8 +1142,8 @@ impl<W: LayoutElement> Workspace<W> {
             return false;
         };
 
-        let mut best: Option<(f64, bool, W::Id)> = None;
-        for (is_floating, id, cx, cy) in candidates {
+        let mut best: Option<(f64, SpaceTag, W::Id)> = None;
+        for (space, id, cx, cy) in candidates {
             let dx = cx - ax;
             let dy = cy - ay;
             let score = match direction {
@@ -1130,16 +1154,24 @@ impl<W: LayoutElement> Workspace<W> {
                 _ => continue,
             };
             if best.as_ref().is_none_or(|(s, _, _)| score < *s) {
-                best = Some((score, is_floating, id));
+                best = Some((score, space, id));
             }
         }
 
         match best {
-            Some((_, true, id)) => {
+            Some((_, SpaceTag::Floating, id)) => {
                 self.focus_floating();
                 self.floating.activate_window(&id)
             }
-            Some((_, false, id)) => {
+            Some((_, SpaceTag::Canvas, id)) => {
+                self.focus_tiling();
+                let activated = self.canvas.activate_window(&id);
+                if activated {
+                    self.canvas.bring_active_tile_into_view();
+                }
+                activated
+            }
+            Some((_, SpaceTag::Scrolling, id)) => {
                 self.focus_tiling();
                 let activated = self.scrolling.activate_window(&id);
                 if activated && matches!(direction, SpatialDirection::Up | SpatialDirection::Down) {
@@ -1156,7 +1188,11 @@ impl<W: LayoutElement> Workspace<W> {
 
     /// Pan the 2D camera on this workspace by `(dx, dy)` with a spring animation.
     pub fn pan_camera(&mut self, dx: f64, dy: f64) {
-        self.scrolling.pan_camera(dx, dy);
+        if self.canvas_mode {
+            self.canvas.pan_camera(dx, dy);
+        } else {
+            self.scrolling.pan_camera(dx, dy);
+        }
     }
 
     pub fn focus_down_or_left(&mut self) {
@@ -2045,6 +2081,10 @@ impl<W: LayoutElement> Workspace<W> {
         if self.floating.activate_window(window) {
             self.floating_is_active = FloatingActive::Yes;
             true
+        } else if self.canvas_mode && self.canvas.activate_window(window) {
+            self.floating_is_active = FloatingActive::No;
+            self.canvas.bring_active_tile_into_view();
+            true
         } else if self.scrolling.activate_window(window) {
             self.floating_is_active = FloatingActive::No;
             true
@@ -2056,17 +2096,22 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn activate_window_without_raising(&mut self, window: &W::Id) -> bool {
         if self.floating.activate_window_without_raising(window) {
             self.floating_is_active = FloatingActive::Yes;
-            true
-        } else if self.scrolling.activate_window(window) {
+            return true;
+        }
+
+        let tiling_activated = (self.canvas_mode
+            && self.canvas.activate_window_without_raising(window))
+            || self.scrolling.activate_window(window);
+
+        if tiling_activated {
             self.floating_is_active = match self.floating_is_active {
                 FloatingActive::No => FloatingActive::No,
                 FloatingActive::NoButRaised => FloatingActive::NoButRaised,
                 FloatingActive::Yes => FloatingActive::NoButRaised,
             };
-            true
-        } else {
-            false
         }
+
+        tiling_activated
     }
 
     pub(super) fn scrolling_insert_position(&self, pos: Point<f64, Logical>) -> InsertPosition {

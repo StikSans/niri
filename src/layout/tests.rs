@@ -4662,3 +4662,73 @@ fn canvas_tiles_flow_through_workspace_iterators() {
     assert_eq!(ws.tiles().count(), 1);
     assert_eq!(ws.tiles_with_render_positions().count(), 1);
 }
+
+#[test]
+fn canvas_mode_active_window_reports_canvas_active_id() {
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(11),
+    }
+    .apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(12),
+    }
+    .apply(&mut layout);
+
+    // Activate the first canvas window by id.
+    assert!(layout.active_workspace_mut().unwrap().activate_window(&11));
+
+    let ws = layout.active_workspace().unwrap();
+    assert_eq!(*ws.active_window().unwrap().id(), 11);
+    assert_eq!(ws.canvas().active_window_id().copied(), Some(11));
+}
+
+#[test]
+fn canvas_mode_spatial_focus_moves_across_canvas_tiles() {
+    use super::scrolling::SpatialDirection;
+
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    // Two windows via the cascading placement (+40,+40) give a strictly down-right neighbor.
+    Op::AddWindow {
+        params: TestWindowParams::new(1),
+    }
+    .apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(2),
+    }
+    .apply(&mut layout);
+
+    // Activate the first one explicitly.
+    assert!(layout.active_workspace_mut().unwrap().activate_window(&1));
+    assert_eq!(
+        *layout
+            .active_workspace()
+            .unwrap()
+            .active_window()
+            .unwrap()
+            .id(),
+        1
+    );
+
+    // focus_spatial(Right) should pick the (+40, +40) tile over staying on #1.
+    let moved = layout
+        .active_workspace_mut()
+        .unwrap()
+        .focus_spatial(SpatialDirection::Right);
+    assert!(moved);
+    assert_eq!(
+        *layout
+            .active_workspace()
+            .unwrap()
+            .active_window()
+            .unwrap()
+            .id(),
+        2
+    );
+}

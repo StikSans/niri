@@ -12,7 +12,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use super::scrolling::SpatialDirection;
 use super::tile::Tile;
-use super::{Canvas, LayoutElement, Options};
+use super::{Canvas, HitType, LayoutElement, Options};
 use crate::animation::{Animation, Clock};
 
 /// A 2D canvas populated by free-placement tiles.
@@ -177,6 +177,89 @@ impl<W: LayoutElement> CanvasSpace<W> {
         };
         tile.set_canvas_pos(canvas_pos);
         true
+    }
+
+    /// Mirror of other spaces: does this canvas contain the window id?
+    pub fn has_window(&self, id: &W::Id) -> bool {
+        self.tiles.iter().any(|t| t.window().id() == id)
+    }
+
+    /// Alias of [`has_window`] matching [`ScrollingSpace::contains`].
+    pub fn contains(&self, id: &W::Id) -> bool {
+        self.has_window(id)
+    }
+
+    /// Activate a tile without any z-ordering side effects. Returns true if the id matched.
+    ///
+    /// CanvasSpace has no z-order in this phase, so this is equivalent to [`activate_window`],
+    /// but the distinct name mirrors [`FloatingSpace`] and lets Workspace use a uniform API.
+    pub fn activate_window_without_raising(&mut self, id: &W::Id) -> bool {
+        self.activate_window(id)
+    }
+
+    /// Propagate the window's latest state into its tile (size changes, sizing mode, etc.).
+    ///
+    /// Mirrors [`ScrollingSpace::update_window`] but without column resizing: in a canvas,
+    /// each tile lives on its own canvas_pos, so resizing doesn't ripple to neighbors.
+    pub fn update_window(&mut self, id: &W::Id) -> bool {
+        let Some(tile) = self.tiles.iter_mut().find(|t| t.window().id() == id) else {
+            return false;
+        };
+        tile.update_window();
+        true
+    }
+
+    /// Hit-test the canvas at the given logical screen-space point.
+    ///
+    /// Iterates tiles in reverse insertion order so later-added tiles are tried first (stands in
+    /// for proper z-order in this phase).
+    pub fn window_under(&self, point: Point<f64, Logical>) -> Option<(&W, HitType)> {
+        let view_pos = self.view_pos();
+        let scale = self.scale;
+        for tile in self.tiles.iter().rev() {
+            let tile_pos =
+                Self::canvas_to_screen_base(tile.canvas_pos(), view_pos) + tile.render_offset();
+            let tile_pos = tile_pos.to_physical_precise_round(scale).to_logical(scale);
+
+            if let Some(rv) = HitType::hit_tile(tile, tile_pos, point) {
+                return Some(rv);
+            }
+        }
+        None
+    }
+
+    /// Debug-mode invariants for `Layout::verify_invariants`.
+    ///
+    /// Must hold at all times: scale is positive, tiles agree with the space's config, the
+    /// active id (if any) references an existing tile, and tile ids are unique.
+    #[cfg(test)]
+    pub fn verify_invariants(&self) {
+        assert!(self.scale > 0.);
+        assert!(self.scale.is_finite());
+
+        for tile in &self.tiles {
+            assert!(Rc::ptr_eq(&self.options, tile.options()));
+            assert_eq!(self.view_size, tile.view_size());
+            assert_eq!(self.scale, tile.scale());
+            tile.verify_invariants();
+        }
+
+        if let Some(id) = &self.active_id {
+            assert!(
+                self.tiles.iter().any(|t| t.window().id() == id),
+                "active_id must reference an existing tile",
+            );
+        }
+
+        // Tile ids must be unique.
+        for (i, a) in self.tiles.iter().enumerate() {
+            for b in self.tiles.iter().skip(i + 1) {
+                assert!(
+                    a.window().id() != b.window().id(),
+                    "duplicate tile id on canvas",
+                );
+            }
+        }
     }
 
     /// Iterate over tiles with their canonical canvas positions (stable under camera / anim).

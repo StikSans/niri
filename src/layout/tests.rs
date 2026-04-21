@@ -4459,4 +4459,80 @@ mod canvas_space_tests {
         assert!((pos.x - 300.).abs() < 1., "got {}", pos.x);
         assert!((pos.y - 250.).abs() < 1., "got {}", pos.y);
     }
+
+    #[test]
+    fn has_window_and_contains_agree() {
+        let mut space = make_space();
+        let t = make_tile(&space, 7);
+        space.add_tile(t, Point::from((0., 0.)));
+        assert!(space.has_window(&7));
+        assert!(space.contains(&7));
+        assert!(!space.has_window(&99));
+        assert!(!space.contains(&99));
+    }
+
+    #[test]
+    fn update_window_returns_true_only_for_known_ids() {
+        let mut space = make_space();
+        let t = make_tile(&space, 1);
+        space.add_tile(t, Point::from((0., 0.)));
+        assert!(space.update_window(&1));
+        assert!(!space.update_window(&999));
+    }
+
+    #[test]
+    fn activate_window_without_raising_matches_activate_window() {
+        let mut space = make_space();
+        let t1 = make_tile(&space, 1);
+        let t2 = make_tile(&space, 2);
+        space.add_tile(t1, Point::from((0., 0.)));
+        space.add_tile(t2, Point::from((200., 0.)));
+        assert!(space.activate_window_without_raising(&1));
+        assert_eq!(*space.active_window().unwrap().id(), 1);
+        assert!(!space.activate_window_without_raising(&999));
+    }
+
+    #[test]
+    fn window_under_hits_tile_at_camera_origin() {
+        let mut space = make_space();
+        // TestWindow default bbox is 100x200. Place at canvas (50, 50).
+        let t = make_tile(&space, 42);
+        space.add_tile(t, Point::from((50., 50.)));
+        // update_render_elements populates tile size; call so hit works.
+        space.update_render_elements(true);
+
+        // Logical point inside the tile's on-screen rect (camera at 0,0, so tile at (50,50)).
+        let hit = space.window_under(Point::from((60., 60.)));
+        assert!(hit.is_some(), "expected a hit inside the tile");
+        let (w, _) = hit.unwrap();
+        assert_eq!(*w.id(), 42);
+
+        // Point far outside.
+        assert!(space.window_under(Point::from((2000., 2000.))).is_none());
+    }
+
+    #[test]
+    fn window_under_reflects_camera_pan() {
+        let mut space = make_space();
+        let t = make_tile(&space, 0);
+        space.add_tile(t, Point::from((400., 300.)));
+        space.update_render_elements(true);
+
+        // Without panning, (60, 60) is outside the tile.
+        assert!(space.window_under(Point::from((60., 60.))).is_none());
+
+        // Pan camera so the tile's top-left sits near (20, 20) on screen.
+        space.set_view_pos(Point::from((380., 280.)));
+        space.update_render_elements(true);
+        assert!(space.window_under(Point::from((30., 30.))).is_some());
+    }
+
+    #[test]
+    fn verify_invariants_on_fresh_and_populated_space() {
+        let mut space = make_space();
+        space.verify_invariants();
+        let t = make_tile(&space, 1);
+        space.add_tile(t, Point::from((0., 0.)));
+        space.verify_invariants();
+    }
 }

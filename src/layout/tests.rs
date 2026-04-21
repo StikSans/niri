@@ -2111,6 +2111,75 @@ fn spatial_focus_picks_nearest_neighbor() {
 }
 
 #[test]
+fn y_camera_animates_when_spatial_focus_target_is_out_of_view() {
+    // Build a column with two stacked tiles; id=0 on top, id=1 below.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(0),
+    }
+    .apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(1),
+    }
+    .apply(&mut layout);
+    Op::ConsumeOrExpelWindowLeft { id: None }.apply(&mut layout);
+
+    // Push the Y camera far up so that both tiles (at canvas y >= 0) are below the viewport.
+    {
+        let ws = layout.active_workspace_mut().unwrap();
+        ws.scrolling_mut().set_view_pos_y(-1000.);
+    }
+
+    // Focus the top tile and verify the camera didn't move on its own.
+    Op::FocusWindow(0).apply(&mut layout);
+    assert_eq!(
+        layout.active_workspace().unwrap().scrolling().target_view_pos_y(),
+        -1000.
+    );
+
+    // Spatial Down should pick id=1 and animate the Y camera to bring it into view.
+    Op::FocusSpatialDown.apply(&mut layout);
+
+    let ws = layout.active_workspace().unwrap();
+    assert_eq!(*ws.scrolling().active_window().unwrap().id(), 1);
+    let y = ws.scrolling().target_view_pos_y();
+    assert!(
+        y > -1000.,
+        "expected Y camera to scroll toward the target tile, got {y}"
+    );
+}
+
+#[test]
+fn y_camera_is_noop_when_active_tile_already_visible() {
+    // Two-tile column; default camera (Y=0) shows both tiles entirely.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(0),
+    }
+    .apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(1),
+    }
+    .apply(&mut layout);
+    Op::ConsumeOrExpelWindowLeft { id: None }.apply(&mut layout);
+
+    Op::FocusWindow(0).apply(&mut layout);
+    assert_eq!(
+        layout.active_workspace().unwrap().scrolling().target_view_pos_y(),
+        0.
+    );
+
+    Op::FocusSpatialDown.apply(&mut layout);
+
+    let ws = layout.active_workspace().unwrap();
+    assert_eq!(*ws.scrolling().active_window().unwrap().id(), 1);
+    // Both tiles fit in the viewport; Y must not move.
+    assert_eq!(ws.scrolling().target_view_pos_y(), 0.);
+}
+
+#[test]
 fn spatial_focus_is_noop_on_edges() {
     // Single window: no neighbor in any direction.
     let mut layout = Layout::default();

@@ -54,6 +54,13 @@ pub struct ScrollingSpace<W: LayoutElement> {
     /// for natural handling of fullscreen windows, which must ignore work area padding.
     view_offset: ViewOffset,
 
+    /// Vertical component of the 2D camera, in absolute canvas-space units.
+    ///
+    /// Unlike `view_offset` (which is relative to the active column), this is the canvas Y of
+    /// the viewport's top edge. Animates independently of X. No gesture state for now — spatial
+    /// focus and a few future scroll hooks are the only drivers.
+    view_offset_y: ViewOffsetY,
+
     /// Whether to activate the previous, rather than the next, column upon column removal.
     ///
     /// When a new column is created and removed with no focus changes in-between, it is more
@@ -119,6 +126,13 @@ pub(super) enum ViewOffset {
     Animation(Animation),
     /// The view offset is controlled by the ongoing gesture.
     Gesture(ViewGesture),
+}
+
+/// Vertical camera position. Simpler than [`ViewOffset`] — no gestures yet.
+#[derive(Debug)]
+pub(super) enum ViewOffsetY {
+    Static(f64),
+    Animation(Animation),
 }
 
 #[derive(Debug)]
@@ -309,6 +323,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             active_column_idx: 0,
             interactive_resize: None,
             view_offset: ViewOffset::Static(0.),
+            view_offset_y: ViewOffsetY::Static(0.),
             activate_prev_column_on_removal: None,
             view_offset_to_restore: None,
             closing_windows: Vec::new(),
@@ -360,6 +375,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             }
         }
 
+        if let ViewOffsetY::Animation(anim) = &self.view_offset_y {
+            if anim.is_done() {
+                self.view_offset_y = ViewOffsetY::Static(anim.to());
+            }
+        }
+
         if let ViewOffset::Gesture(gesture) = &mut self.view_offset {
             // Make sure the last event time doesn't go too much out of date (for
             // workspaces not under cursor), causing sudden jumps.
@@ -397,12 +418,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn are_animations_ongoing(&self) -> bool {
         self.view_offset.is_animation_ongoing()
+            || self.view_offset_y.is_animation_ongoing()
             || self.columns.iter().any(Column::are_animations_ongoing)
             || !self.closing_windows.is_empty()
     }
 
     pub fn are_transitions_ongoing(&self) -> bool {
         !self.view_offset.is_static()
+            || !self.view_offset_y.is_static()
             || self.columns.iter().any(Column::are_transitions_ongoing)
             || !self.closing_windows.is_empty()
     }
@@ -2386,6 +2409,80 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.column_x(self.active_column_idx) + self.view_offset.target()
     }
 
+    pub fn view_pos_y(&self) -> f64 {
+        self.view_offset_y.current()
+    }
+
+    pub fn target_view_pos_y(&self) -> f64 {
+        self.view_offset_y.target()
+    }
+
+    /// Animates the Y camera toward `new_y` using the horizontal-view-movement spring config.
+    ///
+    /// A dedicated `vertical-view-movement` animation can be added later; for now the X config
+    /// gives us consistent feel across both axes.
+    pub fn animate_view_pos_y(&mut self, new_y: f64) {
+        let config = self.options.animations.horizontal_view_movement.0;
+        if self.view_offset_y.target() == new_y {
+            return;
+        }
+        let anim = Animation::new(
+            self.clock.clone(),
+            self.view_offset_y.current(),
+            new_y,
+            0.,
+            config,
+        );
+        self.view_offset_y = ViewOffsetY::Animation(anim);
+    }
+
+    /// Jumps the Y camera to `y` without animation (e.g. for tests or immediate state resets).
+    pub fn set_view_pos_y(&mut self, y: f64) {
+        self.view_offset_y = ViewOffsetY::Static(y);
+    }
+
+    /// Animates Y just enough to bring the active tile's vertical range fully into view.
+    ///
+    /// No-op if the active tile is already fully visible on Y. No-op if there is no active tile.
+    pub fn animate_view_pos_y_to_active_tile(&mut self) {
+        if self.columns.is_empty() {
+            return;
+        }
+
+        let active_id = self.columns[self.active_column_idx].tiles
+            [self.columns[self.active_column_idx].active_tile_idx]
+            .window()
+            .id()
+            .clone();
+
+        let Some((canvas_y, tile_h)) =
+            self.tiles_with_canvas_positions().find_map(|(tile, canvas)| {
+                if tile.window().id() == &active_id {
+                    Some((canvas.y, tile.tile_size().h))
+                } else {
+                    None
+                }
+            })
+        else {
+            return;
+        };
+
+        let view_top = self.target_view_pos_y();
+        let view_h = self.view_size.h;
+        let tile_bottom = canvas_y + tile_h;
+        let view_bottom = view_top + view_h;
+
+        let target = if canvas_y < view_top {
+            canvas_y
+        } else if tile_bottom > view_bottom {
+            tile_bottom - view_h
+        } else {
+            return;
+        };
+
+        self.animate_view_pos_y(target);
+    }
+
     // HACK: pass a self.data iterator in manually as a workaround for the lack of method partial
     // borrowing. Note that this method's return value does not borrow the entire &Self!
     fn column_xs(&self, data: impl Iterator<Item = ColumnData>) -> impl Iterator<Item = f64> {
@@ -2466,6 +2563,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> {
         let scale = self.scale;
         let view_pos = self.view_pos();
+        let view_pos_y = self.view_pos_y();
         self.columns_in_render_order()
             .flat_map(move |(col, col_x)| {
                 let col_render_off = col.render_offset();
@@ -2476,7 +2574,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                         let canvas =
                             Point::<f64, Canvas>::from((col_x + tile_off.x, tile_off.y));
                         let pos =
-                            Self::canvas_to_screen_base(canvas, view_pos)
+                            Self::canvas_to_screen_base(canvas, view_pos, view_pos_y)
                                 + col_render_off
                                 + tile.render_offset();
                         // Round to physical pixels.
@@ -2492,6 +2590,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> {
         let scale = self.scale;
         let view_pos = self.view_pos();
+        let view_pos_y = self.view_pos_y();
         self.columns_in_render_order_mut()
             .flat_map(move |(col, col_x)| {
                 let col_render_off = col.render_offset();
@@ -2499,8 +2598,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     .map(move |(tile, tile_off)| {
                         let canvas =
                             Point::<f64, Canvas>::from((col_x + tile_off.x, tile_off.y));
-                        let mut pos = ScrollingSpace::<W>::canvas_to_screen_base(canvas, view_pos)
-                            + col_render_off
+                        let mut pos = ScrollingSpace::<W>::canvas_to_screen_base(
+                            canvas, view_pos, view_pos_y,
+                        ) + col_render_off
                             + tile.render_offset();
                         // Round to physical pixels.
                         if round {
@@ -2531,14 +2631,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     /// Transform a canvas-space position into the static part of its screen-space position.
     ///
     /// Static here means: ignoring per-column and per-tile animation offsets (those are
-    /// overlaid separately by the render iterators). Right now the camera is purely horizontal
-    /// (`view_pos`); a future 2D camera will add a Y component, and this is the single point to
-    /// update when that lands.
+    /// overlaid separately by the render iterators). The 2D camera is `(view_pos, view_pos_y)` —
+    /// both are subtracted here; render iterators add animation offsets on top.
     pub(super) fn canvas_to_screen_base(
         canvas: Point<f64, Canvas>,
         view_pos: f64,
+        view_pos_y: f64,
     ) -> Point<f64, Logical> {
-        Point::<f64, Logical>::from((canvas.x - view_pos, canvas.y))
+        Point::<f64, Logical>::from((canvas.x - view_pos, canvas.y - view_pos_y))
     }
 
     pub fn tiles_with_ipc_layouts(&self) -> impl Iterator<Item = (&Tile<W>, WindowLayout)> {
@@ -4012,6 +4112,30 @@ impl ViewOffset {
 
     pub fn stop_anim_and_gesture(&mut self) {
         *self = ViewOffset::Static(self.current());
+    }
+}
+
+impl ViewOffsetY {
+    pub fn current(&self) -> f64 {
+        match self {
+            ViewOffsetY::Static(y) => *y,
+            ViewOffsetY::Animation(anim) => anim.value(),
+        }
+    }
+
+    pub fn target(&self) -> f64 {
+        match self {
+            ViewOffsetY::Static(y) => *y,
+            ViewOffsetY::Animation(anim) => anim.to(),
+        }
+    }
+
+    pub fn is_static(&self) -> bool {
+        matches!(self, ViewOffsetY::Static(_))
+    }
+
+    pub fn is_animation_ongoing(&self) -> bool {
+        matches!(self, ViewOffsetY::Animation(_))
     }
 }
 

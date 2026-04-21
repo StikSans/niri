@@ -1044,7 +1044,19 @@ impl<W: LayoutElement> Workspace<W> {
             }
             Some((_, false, id)) => {
                 self.focus_tiling();
-                self.scrolling.activate_window(&id)
+                let activated = self.scrolling.activate_window(&id);
+                if activated
+                    && matches!(
+                        direction,
+                        SpatialDirection::Up | SpatialDirection::Down
+                    )
+                {
+                    // X-axis centering is already handled by activate_window via
+                    // animate_view_offset_to_column. For Y, bring the active tile into view
+                    // with a fit rule (scroll only if needed).
+                    self.scrolling.animate_view_pos_y_to_active_tile();
+                }
+                activated
             }
             None => false,
         }

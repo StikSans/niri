@@ -17,6 +17,7 @@ use smithay::utils::{Logical, Point, Rectangle, Serial, Size, Transform};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::SurfaceCachedState;
 
+use super::canvas_space::CanvasSpace;
 use super::floating::{FloatingSpace, FloatingSpaceRenderElement};
 use super::scrolling::{
     Column, ColumnWidth, ScrollDirection, ScrollingSpace, ScrollingSpaceRenderElement,
@@ -50,6 +51,13 @@ pub struct Workspace<W: LayoutElement> {
 
     /// The floating layout.
     floating: FloatingSpace<W>,
+
+    /// The 2D free-placement canvas layout.
+    ///
+    /// Present on every workspace but not yet populated: the window-routing pipeline still goes
+    /// to [`scrolling`] / [`floating`]. Future phases will land windows here under a workspace
+    /// mode toggle and ultimately replace the scrolling layout.
+    canvas: CanvasSpace<W>,
 
     /// Whether the floating layout is active instead of the scrolling layout.
     floating_is_active: FloatingActive,
@@ -251,12 +259,21 @@ impl<W: LayoutElement> Workspace<W> {
             options.clone(),
         );
 
+        let canvas = CanvasSpace::new(
+            view_size,
+            working_area,
+            scale.fractional_scale(),
+            clock.clone(),
+            options.clone(),
+        );
+
         let shadow_config =
             compute_workspace_shadow_config(options.overview.workspace_shadow, view_size);
 
         Self {
             scrolling,
             floating,
+            canvas,
             floating_is_active: FloatingActive::No,
             original_output,
             scale,
@@ -315,12 +332,21 @@ impl<W: LayoutElement> Workspace<W> {
             options.clone(),
         );
 
+        let canvas = CanvasSpace::new(
+            view_size,
+            working_area,
+            scale.fractional_scale(),
+            clock.clone(),
+            options.clone(),
+        );
+
         let shadow_config =
             compute_workspace_shadow_config(options.overview.workspace_shadow, view_size);
 
         Self {
             scrolling,
             floating,
+            canvas,
             floating_is_active: FloatingActive::No,
             output: None,
             scale,
@@ -409,6 +435,13 @@ impl<W: LayoutElement> Workspace<W> {
         );
 
         self.floating.update_config(
+            self.view_size,
+            self.working_area,
+            self.scale.fractional_scale(),
+            options.clone(),
+        );
+
+        self.canvas.update_config(
             self.view_size,
             self.working_area,
             self.scale.fractional_scale(),
@@ -565,6 +598,12 @@ impl<W: LayoutElement> Workspace<W> {
                 self.options.clone(),
             );
             self.floating.update_config(
+                size,
+                working_area,
+                scale.fractional_scale(),
+                self.options.clone(),
+            );
+            self.canvas.update_config(
                 size,
                 working_area,
                 scale.fractional_scale(),
@@ -2116,6 +2155,11 @@ impl<W: LayoutElement> Workspace<W> {
         assert_eq!(&self.clock, self.floating.clock());
         assert!(Rc::ptr_eq(&self.options, self.floating.options()));
         self.floating.verify_invariants();
+
+        assert_eq!(self.view_size, self.canvas.view_size());
+        assert_eq!(self.working_area, self.canvas.working_area());
+        assert!(Rc::ptr_eq(&self.options, self.canvas.options()));
+        self.canvas.verify_invariants();
 
         if self.floating.is_empty() {
             assert!(

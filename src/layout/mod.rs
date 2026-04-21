@@ -2895,6 +2895,8 @@ impl<W: LayoutElement> Layout<W> {
                         (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
                     let position = if move_.is_floating {
                         InsertPosition::Floating
+                    } else if ws.is_canvas_mode() {
+                        InsertPosition::Canvas(ws.canvas_insert_position(pos_within_workspace))
                     } else {
                         ws.scrolling_insert_position(pos_within_workspace)
                     };
@@ -4204,7 +4206,13 @@ impl<W: LayoutElement> Layout<W> {
                                     let pos_within_workspace =
                                         (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
                                     let ws = &mut mon.workspaces[ws_idx];
-                                    ws.scrolling_insert_position(pos_within_workspace)
+                                    if ws.is_canvas_mode() {
+                                        InsertPosition::Canvas(
+                                            ws.canvas_insert_position(pos_within_workspace),
+                                        )
+                                    } else {
+                                        ws.scrolling_insert_position(pos_within_workspace)
+                                    }
                                 };
 
                                 (position, Some(geo.loc))
@@ -4230,6 +4238,8 @@ impl<W: LayoutElement> Layout<W> {
 
                         let position = if move_.is_floating {
                             InsertPosition::Floating
+                        } else if ws.is_canvas_mode() {
+                            InsertPosition::Canvas(ws.canvas_insert_position(Point::from((0., 0.))))
                         } else {
                             ws.scrolling_insert_position(Point::from((0., 0.)))
                         };
@@ -4331,6 +4341,15 @@ impl<W: LayoutElement> Layout<W> {
                             move_.width,
                             move_.is_full_width,
                             true,
+                        );
+                    }
+                    InsertPosition::Canvas(canvas_pos) => {
+                        mon.add_tile_to_canvas(
+                            ws_idx,
+                            move_.tile,
+                            canvas_pos,
+                            true,
+                            allow_to_activate_workspace,
                         );
                     }
                 }

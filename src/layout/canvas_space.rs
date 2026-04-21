@@ -326,6 +326,28 @@ impl<W: LayoutElement> CanvasSpace<W> {
         })
     }
 
+    /// Mutable variant of [`tiles_with_render_positions`].
+    ///
+    /// `round` controls whether the returned screen-space point is snapped to physical pixels —
+    /// callers that already round separately pass `false` to avoid double-rounding.
+    pub fn tiles_with_render_positions_mut(
+        &mut self,
+        round: bool,
+    ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
+        let view_pos = self.view_pos();
+        let scale = self.scale;
+        self.tiles.iter_mut().map(move |tile| {
+            let pos =
+                Self::canvas_to_screen_base(tile.canvas_pos(), view_pos) + tile.render_offset();
+            let pos = if round {
+                pos.to_physical_precise_round(scale).to_logical(scale)
+            } else {
+                pos
+            };
+            (tile, pos)
+        })
+    }
+
     /// Transform a canvas-space point into static screen-space (no per-tile animation offsets).
     pub(super) fn canvas_to_screen_base(
         canvas: Point<f64, Canvas>,

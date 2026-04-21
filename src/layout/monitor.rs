@@ -126,11 +126,13 @@ pub struct WorkspaceSwitchGesture {
     dnd_nonzero_start_time: Option<Duration>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum InsertPosition {
     NewColumn(usize),
     InColumn(usize, usize),
     Floating,
+    /// Drop the tile onto the 2D canvas at the given canvas-space position (of its top-left).
+    Canvas(Point<f64, super::Canvas>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -619,6 +621,43 @@ impl<W: LayoutElement> Monitor<W> {
 
         if allow_to_activate_workspace && activate {
             self.activate_workspace(workspace_idx);
+        }
+    }
+
+    pub fn add_tile_to_canvas(
+        &mut self,
+        workspace_idx: usize,
+        tile: Tile<W>,
+        canvas_pos: Point<f64, super::Canvas>,
+        activate: bool,
+        // FIXME: Refactor ActivateWindow enum to make this better.
+        allow_to_activate_workspace: bool,
+    ) {
+        let workspace = &mut self.workspaces[workspace_idx];
+
+        workspace.add_tile_to_canvas(tile, canvas_pos, activate);
+
+        if workspace.name().is_none() {
+            workspace.original_output = OutputId::new(&self.output);
+        }
+
+        // Canvas-drop never creates a new workspace, but the last-workspace must stay empty:
+        // dropping onto the last workspace requires spawning a new empty one below it.
+        if workspace_idx == self.workspaces.len() - 1 {
+            self.add_workspace_bottom();
+        }
+        if self.options.layout.empty_workspace_above_first && workspace_idx == 0 {
+            self.add_workspace_top();
+        }
+
+        if allow_to_activate_workspace && activate {
+            // empty_workspace_above_first may have shifted indices by one.
+            let idx = if self.options.layout.empty_workspace_above_first && workspace_idx == 0 {
+                1
+            } else {
+                workspace_idx
+            };
+            self.activate_workspace(idx);
         }
     }
 

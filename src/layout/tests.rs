@@ -4732,3 +4732,81 @@ fn canvas_mode_spatial_focus_moves_across_canvas_tiles() {
         2
     );
 }
+
+#[test]
+fn canvas_mode_drag_drop_lands_at_cursor_canvas_pos() {
+    // Start a fresh canvas, then drag a window and drop it at a specific pointer position.
+    // The dropped tile's canvas_pos must equal camera + pointer (its workspace-local point).
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(7),
+    }
+    .apply(&mut layout);
+
+    // Drag starting at the top-left corner, then move the pointer to (321, 654) on the output.
+    Op::InteractiveMoveBegin {
+        window: 7,
+        output_idx: 1,
+        px: 0.,
+        py: 0.,
+    }
+    .apply(&mut layout);
+    Op::InteractiveMoveUpdate {
+        window: 7,
+        dx: 321.,
+        dy: 654.,
+        output_idx: 1,
+        px: 321.,
+        py: 654.,
+    }
+    .apply(&mut layout);
+    Op::InteractiveMoveEnd { window: 7 }.apply(&mut layout);
+
+    // Camera is at origin in this fresh workspace; drop position equals pointer position.
+    let ws = layout.active_workspace().unwrap();
+    let (_, pos) = ws
+        .canvas()
+        .tiles_with_canvas_positions()
+        .find(|(tile, _)| *tile.window().id() == 7)
+        .expect("canvas still owns tile 7");
+    assert!((pos.x - 321.).abs() < 1e-6);
+    assert!((pos.y - 654.).abs() < 1e-6);
+}
+
+#[test]
+fn canvas_mode_off_drag_drop_uses_scrolling() {
+    // Sanity check: the drag-to-move path only switches to canvas placement when canvas_mode is
+    // actually on. Without the flag, the old scrolling behavior still applies.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(9),
+    }
+    .apply(&mut layout);
+
+    Op::InteractiveMoveBegin {
+        window: 9,
+        output_idx: 1,
+        px: 0.,
+        py: 0.,
+    }
+    .apply(&mut layout);
+    Op::InteractiveMoveUpdate {
+        window: 9,
+        dx: 50.,
+        dy: 50.,
+        output_idx: 1,
+        px: 50.,
+        py: 50.,
+    }
+    .apply(&mut layout);
+    Op::InteractiveMoveEnd { window: 9 }.apply(&mut layout);
+
+    let ws = layout.active_workspace().unwrap();
+    assert!(ws.canvas().is_empty());
+    assert!(!ws.scrolling().is_empty());
+}

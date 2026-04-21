@@ -2753,6 +2753,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 Rectangle::new(loc, size)
             }
             InsertPosition::Floating => return None,
+            InsertPosition::Canvas(_) => return None,
         };
 
         // First window on an empty workspace will cancel out any view offset. Replicate this

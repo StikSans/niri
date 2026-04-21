@@ -798,6 +798,25 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    /// Drop a tile on the canvas at the given canvas-space position.
+    ///
+    /// Used by drag-to-move in canvas mode: the cursor's workspace-local point is translated to
+    /// canvas space via [`canvas_insert_position`], then passed here. Skips the cascade counter
+    /// used by the Auto-path in [`add_tile`] so the drop lands exactly where the user released.
+    pub fn add_tile_to_canvas(
+        &mut self,
+        tile: Tile<W>,
+        canvas_pos: Point<f64, super::Canvas>,
+        activate: bool,
+    ) {
+        self.enter_output_for_window(tile.window());
+        self.canvas.add_tile(tile, canvas_pos);
+
+        if activate {
+            self.floating_is_active = FloatingActive::No;
+        }
+    }
+
     pub fn add_column(&mut self, column: Column<W>, activate: bool) {
         for (tile, _) in column.tiles() {
             self.enter_output_for_window(tile.window());
@@ -1472,6 +1491,11 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn set_fullscreen(&mut self, window: &W::Id, is_fullscreen: bool) {
+        // Canvas tiles have no column / fullscreen concept — nothing to toggle.
+        if self.canvas.has_window(window) {
+            return;
+        }
+
         let mut restore_to_floating = false;
         if self.floating.has_window(window) {
             if is_fullscreen {
@@ -1537,6 +1561,11 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn set_maximized(&mut self, window: &W::Id, maximize: bool) {
+        // Canvas tiles cannot be maximized — free placement is their whole point.
+        if self.canvas.has_window(window) {
+            return;
+        }
+
         let mut restore_to_floating = false;
         if self.floating.has_window(window) {
             if maximize {
@@ -1822,7 +1851,10 @@ impl<W: LayoutElement> Workspace<W> {
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> {
         let scrolling = self.scrolling.tiles_with_render_positions_mut(round);
         let floating = self.floating.tiles_with_render_positions_mut(round);
-        floating.chain(scrolling)
+        // Canvas tiles participate in post-drop animations (and in any future codepath that
+        // needs to reach a specific tile by id), so they have to show up here too.
+        let canvas = self.canvas.tiles_with_render_positions_mut(round);
+        floating.chain(scrolling).chain(canvas)
     }
 
     pub fn tiles_with_ipc_layouts(&self) -> impl Iterator<Item = (&Tile<W>, WindowLayout)> {
@@ -2116,6 +2148,23 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub(super) fn scrolling_insert_position(&self, pos: Point<f64, Logical>) -> InsertPosition {
         self.scrolling.insert_position(pos)
+    }
+
+    /// Is canvas drop-routing active for this workspace?
+    pub(super) fn is_canvas_mode(&self) -> bool {
+        self.canvas_mode
+    }
+
+    /// Translate a workspace-local logical point to a canvas-space top-left for a dropped tile.
+    ///
+    /// Camera (`view_pos`) plus the local cursor position yields the world-space point under the
+    /// cursor; that becomes the tile's canvas origin on drop.
+    pub(super) fn canvas_insert_position(
+        &self,
+        pos_within_workspace: Point<f64, Logical>,
+    ) -> Point<f64, super::Canvas> {
+        let view = self.canvas.view_pos();
+        Point::from((view.x + pos_within_workspace.x, view.y + pos_within_workspace.y))
     }
 
     pub(super) fn insert_hint_area(

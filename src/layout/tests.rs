@@ -1782,10 +1782,13 @@ fn operations_dont_panic() {
 
                 let mut layout = Layout::default();
                 first.clone().apply(&mut layout);
+                layout.sync_canvas_positions();
                 layout.verify_invariants();
                 second.clone().apply(&mut layout);
+                layout.sync_canvas_positions();
                 layout.verify_invariants();
                 third.clone().apply(&mut layout);
+                layout.sync_canvas_positions();
                 layout.verify_invariants();
             }
         }
@@ -1966,10 +1969,13 @@ fn operations_from_starting_state_dont_panic() {
 
                 let mut layout = Layout::default();
                 first.clone().apply(&mut layout);
+                layout.sync_canvas_positions();
                 layout.verify_invariants();
                 second.clone().apply(&mut layout);
+                layout.sync_canvas_positions();
                 layout.verify_invariants();
                 third.clone().apply(&mut layout);
+                layout.sync_canvas_positions();
                 layout.verify_invariants();
             }
         }

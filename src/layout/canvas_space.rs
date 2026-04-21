@@ -1,0 +1,440 @@
+//! Pure 2D canvas layout primitive.
+//!
+//! Unlike [`ScrollingSpace`](super::scrolling::ScrollingSpace), a [`CanvasSpace`] has no column
+//! structure: every tile has an independent `(canvas_x, canvas_y)` and the camera pans on both
+//! axes. This is the home of the "2D infinite canvas" layout. Integration into
+//! [`Workspace`](super::workspace::Workspace) is deliberately deferred — this module is built
+//! bottom-up so each layer can be tested in isolation.
+
+use std::rc::Rc;
+
+use smithay::utils::{Logical, Point, Rectangle, Size};
+
+use super::scrolling::SpatialDirection;
+use super::tile::Tile;
+use super::{Canvas, LayoutElement, Options};
+use crate::animation::{Animation, Clock};
+
+/// A 2D canvas populated by free-placement tiles.
+#[derive(Debug)]
+pub struct CanvasSpace<W: LayoutElement> {
+    /// Tiles on this canvas. Order is creation order — not z-order, not spatial.
+    ///
+    /// Per-tile canvas position lives on `Tile::canvas_pos` so rendering and spatial logic can
+    /// read it without going through this space.
+    tiles: Vec<Tile<W>>,
+
+    /// Id of the active tile, if any. Always set to `Some` when `tiles` is non-empty.
+    active_id: Option<W::Id>,
+
+    /// Horizontal camera position (absolute canvas-space X of the viewport's left edge).
+    view_offset_x: AxisCamera,
+
+    /// Vertical camera position (absolute canvas-space Y of the viewport's top edge).
+    view_offset_y: AxisCamera,
+
+    /// View size for this space.
+    view_size: Size<f64, Logical>,
+
+    /// Working area (view minus layer-shell struts).
+    working_area: Rectangle<f64, Logical>,
+
+    /// Output scale for physical-pixel rounding.
+    scale: f64,
+
+    /// Clock for driving animations.
+    clock: Clock,
+
+    /// Configurable properties.
+    options: Rc<Options>,
+}
+
+/// Single-axis camera — static value or spring animation.
+#[derive(Debug)]
+enum AxisCamera {
+    Static(f64),
+    Animation(Animation),
+}
+
+impl AxisCamera {
+    fn current(&self) -> f64 {
+        match self {
+            AxisCamera::Static(v) => *v,
+            AxisCamera::Animation(a) => a.value(),
+        }
+    }
+
+    fn target(&self) -> f64 {
+        match self {
+            AxisCamera::Static(v) => *v,
+            AxisCamera::Animation(a) => a.to(),
+        }
+    }
+
+    fn is_static(&self) -> bool {
+        matches!(self, AxisCamera::Static(_))
+    }
+
+    fn is_animation_ongoing(&self) -> bool {
+        matches!(self, AxisCamera::Animation(_))
+    }
+}
+
+impl<W: LayoutElement> CanvasSpace<W> {
+    pub fn new(
+        view_size: Size<f64, Logical>,
+        working_area: Rectangle<f64, Logical>,
+        scale: f64,
+        clock: Clock,
+        options: Rc<Options>,
+    ) -> Self {
+        Self {
+            tiles: Vec::new(),
+            active_id: None,
+            view_offset_x: AxisCamera::Static(0.),
+            view_offset_y: AxisCamera::Static(0.),
+            view_size,
+            working_area,
+            scale,
+            clock,
+            options,
+        }
+    }
+
+    pub fn update_config(
+        &mut self,
+        view_size: Size<f64, Logical>,
+        working_area: Rectangle<f64, Logical>,
+        scale: f64,
+        options: Rc<Options>,
+    ) {
+        for tile in &mut self.tiles {
+            tile.update_config(view_size, scale, options.clone());
+        }
+        self.view_size = view_size;
+        self.working_area = working_area;
+        self.scale = scale;
+        self.options = options;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tiles.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.tiles.len()
+    }
+
+    /// Append `tile` to the canvas at `canvas_pos`, activating it.
+    pub fn add_tile(&mut self, mut tile: Tile<W>, canvas_pos: Point<f64, Canvas>) {
+        tile.set_canvas_pos(canvas_pos);
+        self.active_id = Some(tile.window().id().clone());
+        self.tiles.push(tile);
+    }
+
+    /// Remove the tile with the given id. Returns the tile on success.
+    pub fn remove_tile(&mut self, id: &W::Id) -> Option<Tile<W>> {
+        let idx = self.tiles.iter().position(|t| t.window().id() == id)?;
+        let tile = self.tiles.remove(idx);
+
+        // Fix up the active id if we just removed it.
+        if self.active_id.as_ref() == Some(id) {
+            self.active_id = self.tiles.first().map(|t| t.window().id().clone());
+        }
+        Some(tile)
+    }
+
+    pub fn tiles(&self) -> impl Iterator<Item = &Tile<W>> + '_ {
+        self.tiles.iter()
+    }
+
+    pub fn tiles_mut(&mut self) -> impl Iterator<Item = &mut Tile<W>> + '_ {
+        self.tiles.iter_mut()
+    }
+
+    pub fn active_window(&self) -> Option<&W> {
+        let id = self.active_id.as_ref()?;
+        self.tiles
+            .iter()
+            .find(|t| t.window().id() == id)
+            .map(Tile::window)
+    }
+
+    /// Activate the tile with the given id. Returns true if the id matched a tile.
+    pub fn activate_window(&mut self, id: &W::Id) -> bool {
+        if self.tiles.iter().any(|t| t.window().id() == id) {
+            self.active_id = Some(id.clone());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Move the tile identified by `id` to the given canvas position. No-op if not found.
+    pub fn move_tile_to(&mut self, id: &W::Id, canvas_pos: Point<f64, Canvas>) -> bool {
+        let Some(tile) = self.tiles.iter_mut().find(|t| t.window().id() == id) else {
+            return false;
+        };
+        tile.set_canvas_pos(canvas_pos);
+        true
+    }
+
+    /// Iterate over tiles with their canonical canvas positions (stable under camera / anim).
+    pub fn tiles_with_canvas_positions(
+        &self,
+    ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Canvas>)> + '_ {
+        self.tiles.iter().map(|tile| (tile, tile.canvas_pos()))
+    }
+
+    /// Iterate over tiles with screen-space positions: canvas_pos minus camera, then rounded.
+    pub fn tiles_with_render_positions(
+        &self,
+    ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> + '_ {
+        let view_pos = self.view_pos();
+        let scale = self.scale;
+        self.tiles.iter().map(move |tile| {
+            let pos =
+                Self::canvas_to_screen_base(tile.canvas_pos(), view_pos) + tile.render_offset();
+            let pos = pos.to_physical_precise_round(scale).to_logical(scale);
+            (tile, pos)
+        })
+    }
+
+    /// Transform a canvas-space point into static screen-space (no per-tile animation offsets).
+    pub(super) fn canvas_to_screen_base(
+        canvas: Point<f64, Canvas>,
+        view_pos: Point<f64, Canvas>,
+    ) -> Point<f64, Logical> {
+        Point::<f64, Logical>::from((canvas.x - view_pos.x, canvas.y - view_pos.y))
+    }
+
+    // --- camera ---
+
+    pub fn view_pos(&self) -> Point<f64, Canvas> {
+        Point::from((self.view_offset_x.current(), self.view_offset_y.current()))
+    }
+
+    pub fn target_view_pos(&self) -> Point<f64, Canvas> {
+        Point::from((self.view_offset_x.target(), self.view_offset_y.target()))
+    }
+
+    pub fn view_pos_x(&self) -> f64 {
+        self.view_offset_x.current()
+    }
+
+    pub fn view_pos_y(&self) -> f64 {
+        self.view_offset_y.current()
+    }
+
+    pub fn target_view_pos_x(&self) -> f64 {
+        self.view_offset_x.target()
+    }
+
+    pub fn target_view_pos_y(&self) -> f64 {
+        self.view_offset_y.target()
+    }
+
+    /// Jumps the camera to an absolute canvas position without animation.
+    pub fn set_view_pos(&mut self, pos: Point<f64, Canvas>) {
+        self.view_offset_x = AxisCamera::Static(pos.x);
+        self.view_offset_y = AxisCamera::Static(pos.y);
+    }
+
+    /// Animates the X camera toward `new_x` using the horizontal-view-movement spring.
+    pub fn animate_view_pos_x(&mut self, new_x: f64) {
+        let config = self.options.animations.horizontal_view_movement.0;
+        if self.view_offset_x.target() == new_x {
+            return;
+        }
+        self.view_offset_x = AxisCamera::Animation(Animation::new(
+            self.clock.clone(),
+            self.view_offset_x.current(),
+            new_x,
+            0.,
+            config,
+        ));
+    }
+
+    /// Animates the Y camera toward `new_y`.
+    pub fn animate_view_pos_y(&mut self, new_y: f64) {
+        let config = self.options.animations.horizontal_view_movement.0;
+        if self.view_offset_y.target() == new_y {
+            return;
+        }
+        self.view_offset_y = AxisCamera::Animation(Animation::new(
+            self.clock.clone(),
+            self.view_offset_y.current(),
+            new_y,
+            0.,
+            config,
+        ));
+    }
+
+    /// Pan the camera by `(dx, dy)` with a spring animation.
+    pub fn pan_camera(&mut self, dx: f64, dy: f64) {
+        if dx != 0. {
+            self.animate_view_pos_x(self.view_offset_x.target() + dx);
+        }
+        if dy != 0. {
+            self.animate_view_pos_y(self.view_offset_y.target() + dy);
+        }
+    }
+
+    /// Fits the active tile into view on both axes (only pans where needed).
+    pub fn bring_active_tile_into_view(&mut self) {
+        let Some(id) = self.active_id.clone() else {
+            return;
+        };
+        let Some(tile) = self.tiles.iter().find(|t| t.window().id() == &id) else {
+            return;
+        };
+
+        let canvas = tile.canvas_pos();
+        let size = tile.tile_size();
+
+        let view_left = self.target_view_pos_x();
+        let view_top = self.target_view_pos_y();
+        let view_right = view_left + self.view_size.w;
+        let view_bottom = view_top + self.view_size.h;
+
+        if canvas.x < view_left {
+            self.animate_view_pos_x(canvas.x);
+        } else if canvas.x + size.w > view_right {
+            self.animate_view_pos_x(canvas.x + size.w - self.view_size.w);
+        }
+
+        if canvas.y < view_top {
+            self.animate_view_pos_y(canvas.y);
+        } else if canvas.y + size.h > view_bottom {
+            self.animate_view_pos_y(canvas.y + size.h - self.view_size.h);
+        }
+    }
+
+    // --- spatial focus ---
+
+    /// Activate the nearest tile in `direction`, scored in canvas space.
+    ///
+    /// Uses the same `primary + 2 * |perpendicular|` rule as the scrolling-space spatial focus,
+    /// so cross-space navigation in Workspace remains consistent.
+    pub fn focus_spatial(&mut self, direction: SpatialDirection) -> bool {
+        let Some(active_id) = self.active_id.clone() else {
+            return false;
+        };
+
+        let mut active_center: Option<(f64, f64)> = None;
+        let mut candidates: Vec<(W::Id, f64, f64)> = Vec::new();
+
+        for tile in &self.tiles {
+            let canvas = tile.canvas_pos();
+            let size = tile.tile_size();
+            let cx = canvas.x + size.w / 2.;
+            let cy = canvas.y + size.h / 2.;
+            if tile.window().id() == &active_id {
+                active_center = Some((cx, cy));
+            } else {
+                candidates.push((tile.window().id().clone(), cx, cy));
+            }
+        }
+
+        let Some((ax, ay)) = active_center else {
+            return false;
+        };
+
+        let mut best: Option<(f64, W::Id)> = None;
+        for (id, cx, cy) in candidates {
+            let dx = cx - ax;
+            let dy = cy - ay;
+            let score = match direction {
+                SpatialDirection::Right if dx > 0. => dx + 2. * dy.abs(),
+                SpatialDirection::Left if dx < 0. => -dx + 2. * dy.abs(),
+                SpatialDirection::Down if dy > 0. => dy + 2. * dx.abs(),
+                SpatialDirection::Up if dy < 0. => -dy + 2. * dx.abs(),
+                _ => continue,
+            };
+            if best.as_ref().is_none_or(|(s, _)| score < *s) {
+                best = Some((score, id));
+            }
+        }
+
+        match best {
+            Some((_, id)) => {
+                self.active_id = Some(id);
+                self.bring_active_tile_into_view();
+                true
+            }
+            None => false,
+        }
+    }
+
+    // --- animation lifecycle ---
+
+    pub fn advance_animations(&mut self) {
+        if let AxisCamera::Animation(anim) = &self.view_offset_x {
+            if anim.is_done() {
+                self.view_offset_x = AxisCamera::Static(anim.to());
+            }
+        }
+        if let AxisCamera::Animation(anim) = &self.view_offset_y {
+            if anim.is_done() {
+                self.view_offset_y = AxisCamera::Static(anim.to());
+            }
+        }
+        for tile in &mut self.tiles {
+            tile.advance_animations();
+        }
+    }
+
+    pub fn are_animations_ongoing(&self) -> bool {
+        self.view_offset_x.is_animation_ongoing()
+            || self.view_offset_y.is_animation_ongoing()
+            || self.tiles.iter().any(Tile::are_animations_ongoing)
+    }
+
+    pub fn are_transitions_ongoing(&self) -> bool {
+        !self.view_offset_x.is_static()
+            || !self.view_offset_y.is_static()
+            || self.tiles.iter().any(Tile::are_transitions_ongoing)
+    }
+
+    pub fn update_render_elements(&mut self, is_active: bool) {
+        let view_pos = self.view_pos();
+        let view_size = self.view_size;
+        let active_id = self.active_id.clone();
+        for tile in &mut self.tiles {
+            let tile_active = is_active && active_id.as_ref() == Some(tile.window().id());
+            let tile_canvas = tile.canvas_pos();
+            let view_rect = Rectangle::new(
+                Point::<f64, Logical>::from((
+                    view_pos.x - tile_canvas.x,
+                    view_pos.y - tile_canvas.y,
+                )),
+                view_size,
+            );
+            tile.update_render_elements(tile_active, view_rect);
+        }
+    }
+
+    /// Keep [`Tile::canvas_pos`] in sync with the space's source of truth.
+    ///
+    /// In CanvasSpace the tile's own `canvas_pos` IS the source of truth — this method exists
+    /// only to mirror the API surface of other spaces so that Workspace can call it uniformly.
+    pub fn update_canvas_positions(&mut self) {
+        // No-op: tile.canvas_pos is already the canonical value here.
+    }
+
+    pub fn view_size(&self) -> Size<f64, Logical> {
+        self.view_size
+    }
+
+    pub fn working_area(&self) -> Rectangle<f64, Logical> {
+        self.working_area
+    }
+
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    pub fn options(&self) -> &Rc<Options> {
+        &self.options
+    }
+}

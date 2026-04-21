@@ -75,6 +75,7 @@ use crate::utils::{
 };
 use crate::window::ResolvedWindowRules;
 
+pub mod canvas_space;
 pub mod closing_window;
 pub mod floating;
 pub mod focus_ring;

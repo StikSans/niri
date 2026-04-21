@@ -4239,3 +4239,224 @@ proptest! {
         check_ops_with_options(options, ops);
     }
 }
+
+mod canvas_space_tests {
+    use std::rc::Rc;
+
+    use smithay::utils::{Point, Rectangle, Size};
+
+    use super::{TestWindow, TestWindowParams};
+    use crate::animation::Clock;
+    use crate::layout::canvas_space::CanvasSpace;
+    use crate::layout::scrolling::SpatialDirection;
+    use crate::layout::tile::Tile;
+    use crate::layout::{LayoutElement, Options};
+
+    const VIEW_W: f64 = 1280.;
+    const VIEW_H: f64 = 720.;
+
+    fn make_space() -> CanvasSpace<TestWindow> {
+        let view_size = Size::from((VIEW_W, VIEW_H));
+        let working_area = Rectangle::from_size(view_size);
+        CanvasSpace::new(
+            view_size,
+            working_area,
+            1.,
+            Clock::with_time(std::time::Duration::ZERO),
+            Rc::new(Options::default()),
+        )
+    }
+
+    fn make_tile(space: &CanvasSpace<TestWindow>, id: usize) -> Tile<TestWindow> {
+        let win = TestWindow::new(TestWindowParams::new(id));
+        Tile::new(
+            win,
+            space.view_size(),
+            space.scale(),
+            Clock::with_time(std::time::Duration::ZERO),
+            space.options().clone(),
+        )
+    }
+
+    #[test]
+    fn empty_space_has_no_active_window() {
+        let space = make_space();
+        assert!(space.is_empty());
+        assert_eq!(space.len(), 0);
+        assert!(space.active_window().is_none());
+    }
+
+    #[test]
+    fn add_tile_activates_it_and_sets_canvas_pos() {
+        let mut space = make_space();
+        let tile = make_tile(&space, 1);
+        space.add_tile(tile, Point::from((250., 400.)));
+
+        assert_eq!(space.len(), 1);
+        let win = space.active_window().unwrap();
+        assert_eq!(*win.id(), 1);
+
+        let (t, pos) = space.tiles_with_canvas_positions().next().unwrap();
+        assert_eq!(*t.window().id(), 1);
+        assert!((pos.x - 250.).abs() < 1e-9);
+        assert!((pos.y - 400.).abs() < 1e-9);
+    }
+
+    #[test]
+    fn remove_tile_fixes_active_id() {
+        let mut space = make_space();
+        let t1 = make_tile(&space, 1);
+        let t2 = make_tile(&space, 2);
+        space.add_tile(t1, Point::from((0., 0.)));
+        space.add_tile(t2, Point::from((500., 0.)));
+        assert_eq!(*space.active_window().unwrap().id(), 2);
+
+        let removed = space.remove_tile(&2).unwrap();
+        assert_eq!(*removed.window().id(), 2);
+        assert_eq!(space.len(), 1);
+        assert_eq!(*space.active_window().unwrap().id(), 1);
+
+        // Removing a non-active tile leaves active intact.
+        let t3 = make_tile(&space, 3);
+        space.add_tile(t3, Point::from((0., 800.)));
+        assert_eq!(*space.active_window().unwrap().id(), 3);
+        space.remove_tile(&1).unwrap();
+        assert_eq!(*space.active_window().unwrap().id(), 3);
+
+        // Remove last → active becomes None.
+        space.remove_tile(&3).unwrap();
+        assert!(space.active_window().is_none());
+    }
+
+    #[test]
+    fn activate_window_matches_existing_id() {
+        let mut space = make_space();
+        let t1 = make_tile(&space, 1);
+        let t2 = make_tile(&space, 2);
+        space.add_tile(t1, Point::from((0., 0.)));
+        space.add_tile(t2, Point::from((200., 0.)));
+        assert!(space.activate_window(&1));
+        assert_eq!(*space.active_window().unwrap().id(), 1);
+        assert!(!space.activate_window(&999));
+    }
+
+    #[test]
+    fn move_tile_to_updates_canvas_pos() {
+        let mut space = make_space();
+        let t = make_tile(&space, 1);
+        space.add_tile(t, Point::from((0., 0.)));
+        assert!(space.move_tile_to(&1, Point::from((1234., 5678.))));
+
+        let (_, pos) = space.tiles_with_canvas_positions().next().unwrap();
+        assert!((pos.x - 1234.).abs() < 1e-9);
+        assert!((pos.y - 5678.).abs() < 1e-9);
+
+        assert!(!space.move_tile_to(&999, Point::from((0., 0.))));
+    }
+
+    #[test]
+    fn pan_camera_accumulates_on_both_axes() {
+        let mut space = make_space();
+        space.pan_camera(100., 50.);
+        assert!((space.target_view_pos_x() - 100.).abs() < 1e-9);
+        assert!((space.target_view_pos_y() - 50.).abs() < 1e-9);
+
+        space.pan_camera(25., -30.);
+        assert!((space.target_view_pos_x() - 125.).abs() < 1e-9);
+        assert!((space.target_view_pos_y() - 20.).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_view_pos_jumps_without_animation() {
+        let mut space = make_space();
+        space.set_view_pos(Point::from((42., 99.)));
+        assert!(!space.are_animations_ongoing());
+        assert!((space.view_pos_x() - 42.).abs() < 1e-9);
+        assert!((space.view_pos_y() - 99.).abs() < 1e-9);
+    }
+
+    #[test]
+    fn focus_spatial_picks_nearest_neighbor() {
+        let mut space = make_space();
+        // Active in center, neighbors in 4 directions.
+        let t0 = make_tile(&space, 0);
+        let t1 = make_tile(&space, 1);
+        let t2 = make_tile(&space, 2);
+        let t3 = make_tile(&space, 3);
+        let t4 = make_tile(&space, 4);
+        space.add_tile(t0, Point::from((0., 0.)));
+        space.add_tile(t1, Point::from((500., 0.))); // right
+        space.add_tile(t2, Point::from((-500., 0.))); // left
+        space.add_tile(t3, Point::from((0., 500.))); // down
+        space.add_tile(t4, Point::from((0., -500.))); // up
+
+        space.activate_window(&0);
+        assert!(space.focus_spatial(SpatialDirection::Right));
+        assert_eq!(*space.active_window().unwrap().id(), 1);
+
+        space.activate_window(&0);
+        assert!(space.focus_spatial(SpatialDirection::Left));
+        assert_eq!(*space.active_window().unwrap().id(), 2);
+
+        space.activate_window(&0);
+        assert!(space.focus_spatial(SpatialDirection::Down));
+        assert_eq!(*space.active_window().unwrap().id(), 3);
+
+        space.activate_window(&0);
+        assert!(space.focus_spatial(SpatialDirection::Up));
+        assert_eq!(*space.active_window().unwrap().id(), 4);
+    }
+
+    #[test]
+    fn focus_spatial_returns_false_with_no_candidate() {
+        let mut space = make_space();
+        let t0 = make_tile(&space, 0);
+        let t1 = make_tile(&space, 1);
+        space.add_tile(t0, Point::from((0., 0.)));
+        // Only right-hand neighbor exists.
+        space.add_tile(t1, Point::from((500., 0.)));
+        space.activate_window(&0);
+        assert!(!space.focus_spatial(SpatialDirection::Left));
+        assert!(!space.focus_spatial(SpatialDirection::Up));
+        assert!(!space.focus_spatial(SpatialDirection::Down));
+        assert_eq!(*space.active_window().unwrap().id(), 0);
+    }
+
+    #[test]
+    fn bring_active_tile_into_view_pans_when_offscreen() {
+        let mut space = make_space();
+        // Tile at (5000, 3000) — far from origin.
+        let t = make_tile(&space, 0);
+        space.add_tile(t, Point::from((5000., 3000.)));
+        space.bring_active_tile_into_view();
+        // Camera should have moved toward tile.
+        let tx = space.target_view_pos_x();
+        let ty = space.target_view_pos_y();
+        assert!(tx > 0., "X should pan right: got {tx}");
+        assert!(ty > 0., "Y should pan down: got {ty}");
+    }
+
+    #[test]
+    fn bring_active_tile_into_view_noop_when_visible() {
+        let mut space = make_space();
+        // Tile near origin — already inside the 1280x720 view.
+        let t = make_tile(&space, 0);
+        space.add_tile(t, Point::from((50., 50.)));
+        space.bring_active_tile_into_view();
+        assert!((space.target_view_pos_x() - 0.).abs() < 1e-9);
+        assert!((space.target_view_pos_y() - 0.).abs() < 1e-9);
+    }
+
+    #[test]
+    fn tiles_with_render_positions_respects_camera() {
+        let mut space = make_space();
+        let t = make_tile(&space, 0);
+        space.add_tile(t, Point::from((400., 300.)));
+        space.set_view_pos(Point::from((100., 50.)));
+
+        let (_, pos) = space.tiles_with_render_positions().next().unwrap();
+        // Expected: (400-100, 300-50) = (300, 250), possibly rounded.
+        assert!((pos.x - 300.).abs() < 1., "got {}", pos.x);
+        assert!((pos.y - 250.).abs() < 1., "got {}", pos.y);
+    }
+}

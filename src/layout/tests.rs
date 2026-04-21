@@ -4536,3 +4536,66 @@ mod canvas_space_tests {
         space.verify_invariants();
     }
 }
+
+#[test]
+fn canvas_mode_routes_new_windows_into_canvas() {
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(42),
+    }
+    .apply(&mut layout);
+
+    let ws = layout.active_workspace().unwrap();
+    assert_eq!(ws.tiles().count(), 1);
+    assert!(ws.scrolling().is_empty());
+    assert!(ws.floating().is_empty());
+    assert!(ws.canvas().has_window(&42));
+}
+
+#[test]
+fn canvas_mode_cascades_placement() {
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    for id in 0..3usize {
+        Op::AddWindow {
+            params: TestWindowParams::new(id),
+        }
+        .apply(&mut layout);
+    }
+
+    let positions: Vec<_> = layout
+        .active_workspace()
+        .unwrap()
+        .canvas()
+        .tiles_with_canvas_positions()
+        .map(|(_, p)| (p.x, p.y))
+        .collect();
+    assert_eq!(positions.len(), 3);
+    assert!((positions[1].0 - positions[0].0 - 40.).abs() < 1e-9);
+    assert!((positions[1].1 - positions[0].1 - 40.).abs() < 1e-9);
+    assert!((positions[2].0 - positions[0].0 - 80.).abs() < 1e-9);
+    assert!((positions[2].1 - positions[0].1 - 80.).abs() < 1e-9);
+}
+
+#[test]
+fn canvas_tiles_flow_through_workspace_iterators() {
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(1),
+    }
+    .apply(&mut layout);
+
+    let ws = layout.active_workspace().unwrap();
+    assert_eq!(ws.windows().count(), 1);
+    assert_eq!(ws.tiles().count(), 1);
+    assert_eq!(ws.tiles_with_render_positions().count(), 1);
+}

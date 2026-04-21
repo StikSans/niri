@@ -54,10 +54,18 @@ pub struct Workspace<W: LayoutElement> {
 
     /// The 2D free-placement canvas layout.
     ///
-    /// Present on every workspace but not yet populated: the window-routing pipeline still goes
-    /// to [`scrolling`] / [`floating`]. Future phases will land windows here under a workspace
-    /// mode toggle and ultimately replace the scrolling layout.
+    /// Populated only when [`canvas_mode`] is on. Long-term goal: replace the scrolling layout.
     canvas: CanvasSpace<W>,
+
+    /// When true, `add_tile(Auto, …)` routes new windows into [`canvas`] instead of scrolling.
+    ///
+    /// Scrolling and floating can still contain pre-existing tiles — this is coexistence, not
+    /// a hard switch. Callers that explicitly target a column (`NewColumnAt`, `NextTo`) keep
+    /// going to scrolling.
+    canvas_mode: bool,
+
+    /// Cascade counter for placing new canvas tiles so they don't all stack on the same spot.
+    canvas_placement_counter: u32,
 
     /// Whether the floating layout is active instead of the scrolling layout.
     floating_is_active: FloatingActive,
@@ -274,6 +282,8 @@ impl<W: LayoutElement> Workspace<W> {
             scrolling,
             floating,
             canvas,
+            canvas_mode: false,
+            canvas_placement_counter: 0,
             floating_is_active: FloatingActive::No,
             original_output,
             scale,
@@ -347,6 +357,8 @@ impl<W: LayoutElement> Workspace<W> {
             scrolling,
             floating,
             canvas,
+            canvas_mode: false,
+            canvas_placement_counter: 0,
             floating_is_active: FloatingActive::No,
             output: None,
             scale,
@@ -392,14 +404,29 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn advance_animations(&mut self) {
         self.scrolling.advance_animations();
         self.floating.advance_animations();
+        self.canvas.advance_animations();
     }
 
     pub fn are_animations_ongoing(&self) -> bool {
-        self.scrolling.are_animations_ongoing() || self.floating.are_animations_ongoing()
+        self.scrolling.are_animations_ongoing()
+            || self.floating.are_animations_ongoing()
+            || self.canvas.are_animations_ongoing()
+    }
+
+    pub fn canvas_mode(&self) -> bool {
+        self.canvas_mode
+    }
+
+    /// Enable or disable canvas mode. When on, new `add_tile(Auto, …)` calls route into the
+    /// 2D canvas. Existing scrolling/floating tiles are untouched.
+    pub fn set_canvas_mode(&mut self, on: bool) {
+        self.canvas_mode = on;
     }
 
     pub fn are_transitions_ongoing(&self) -> bool {
-        self.scrolling.are_transitions_ongoing() || self.floating.are_transitions_ongoing()
+        self.scrolling.are_transitions_ongoing()
+            || self.floating.are_transitions_ongoing()
+            || self.canvas.are_transitions_ongoing()
     }
 
     pub fn update_render_elements(&mut self, is_active: bool) {
@@ -409,6 +436,9 @@ impl<W: LayoutElement> Workspace<W> {
         let view_rect = Rectangle::from_size(self.view_size);
         self.floating
             .update_render_elements(is_active && self.floating_is_active.get(), view_rect);
+
+        self.canvas
+            .update_render_elements(is_active && self.canvas_mode);
 
         self.shadow.update_render_elements(
             self.view_size,
@@ -485,13 +515,15 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn tiles(&self) -> impl Iterator<Item = &Tile<W>> + '_ {
         let scrolling = self.scrolling.tiles();
         let floating = self.floating.tiles();
-        scrolling.chain(floating)
+        let canvas = self.canvas.tiles();
+        scrolling.chain(floating).chain(canvas)
     }
 
     pub fn tiles_mut(&mut self) -> impl Iterator<Item = &mut Tile<W>> + '_ {
         let scrolling = self.scrolling.tiles_mut();
         let floating = self.floating.tiles_mut();
-        scrolling.chain(floating)
+        let canvas = self.canvas.tiles_mut();
+        scrolling.chain(floating).chain(canvas)
     }
 
     pub fn is_floating(&self, id: &W::Id) -> bool {
@@ -650,6 +682,19 @@ impl<W: LayoutElement> Workspace<W> {
         self.enter_output_for_window(tile.window());
         tile.restore_to_floating = is_floating;
 
+        // Canvas-mode Auto-routing: non-floating tiles that would normally open in scrolling go
+        // to the 2D canvas instead. Explicit column targets stay with scrolling for now.
+        if self.canvas_mode && matches!(target, WorkspaceAddWindowTarget::Auto) && !is_floating {
+            let n = f64::from(self.canvas_placement_counter);
+            let pos = Point::<f64, super::Canvas>::from((
+                self.canvas.target_view_pos_x() + 40. * n,
+                self.canvas.target_view_pos_y() + 40. * n,
+            ));
+            self.canvas.add_tile(tile, pos);
+            self.canvas_placement_counter = self.canvas_placement_counter.wrapping_add(1);
+            return;
+        }
+
         match target {
             WorkspaceAddWindowTarget::Auto => {
                 // Don't steal focus from an active fullscreen window.
@@ -775,7 +820,19 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn remove_tile(&mut self, id: &W::Id, transaction: Transaction) -> RemovedTile<W> {
         let mut from_floating = false;
-        let removed = if self.floating.has_window(id) {
+        let removed = if self.canvas.has_window(id) {
+            let tile = self
+                .canvas
+                .remove_tile(id)
+                .expect("has_window just matched");
+            let width = ColumnWidth::Fixed(tile.tile_expected_or_current_size().w);
+            RemovedTile {
+                tile,
+                width,
+                is_full_width: false,
+                is_floating: false,
+            }
+        } else if self.floating.has_window(id) {
             from_floating = true;
             self.floating.remove_tile(id)
         } else {
@@ -1713,7 +1770,13 @@ impl<W: LayoutElement> Workspace<W> {
         let visible = self.is_floating_visible();
         let floating = floating.map(move |(tile, pos)| (tile, pos, visible));
 
-        floating.chain(scrolling)
+        let canvas_visible = self.canvas_mode;
+        let canvas = self
+            .canvas
+            .tiles_with_render_positions()
+            .map(move |(tile, pos)| (tile, pos, canvas_visible));
+
+        floating.chain(scrolling).chain(canvas)
     }
 
     pub fn tiles_with_render_positions_mut(
@@ -2117,6 +2180,16 @@ impl<W: LayoutElement> Workspace<W> {
     #[cfg(test)]
     pub fn floating_mut(&mut self) -> &mut FloatingSpace<W> {
         &mut self.floating
+    }
+
+    #[cfg(test)]
+    pub fn canvas(&self) -> &CanvasSpace<W> {
+        &self.canvas
+    }
+
+    #[cfg(test)]
+    pub fn canvas_mut(&mut self) -> &mut CanvasSpace<W> {
+        &mut self.canvas
     }
 
     #[cfg(test)]

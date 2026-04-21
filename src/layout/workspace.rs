@@ -1968,6 +1968,15 @@ impl<W: LayoutElement> Workspace<W> {
             }
         }
 
+        // Canvas tiles render on top of scrolling, so they take hit-testing priority when
+        // canvas_mode is on. When off, canvas tiles are invisible (see render_canvas) and
+        // must not be hit-testable either.
+        if self.canvas_mode {
+            if let Some(rv) = self.canvas.window_under(pos) {
+                return Some(rv);
+            }
+        }
+
         self.scrolling.window_under(pos)
     }
 

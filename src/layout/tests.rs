@@ -4590,6 +4590,63 @@ fn canvas_mode_cascades_placement() {
 }
 
 #[test]
+fn canvas_mode_workspace_hit_tests_canvas_tile() {
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(7),
+    }
+    .apply(&mut layout);
+
+    // Drive one render-elements update so tile sizes are populated for hit testing.
+    layout.refresh(true);
+
+    let ws = layout.active_workspace().unwrap();
+    let (tile, pos) = ws
+        .canvas()
+        .tiles_with_render_positions()
+        .next()
+        .expect("the canvas tile");
+    let size = tile.tile_size();
+    let hit_point = Point::<f64, Logical>::from((pos.x + size.w / 2., pos.y + size.h / 2.));
+
+    let (win, _) = ws.window_under(hit_point).expect("hit canvas tile");
+    assert_eq!(*win.id(), 7);
+}
+
+#[test]
+fn canvas_tiles_not_hit_tested_when_canvas_mode_off() {
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+
+    // Create a canvas tile while canvas_mode is on, then switch it off again.
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+    Op::AddWindow {
+        params: TestWindowParams::new(3),
+    }
+    .apply(&mut layout);
+    layout.refresh(true);
+
+    // Capture the tile's screen-space center before flipping the flag.
+    let hit_point = {
+        let ws = layout.active_workspace().unwrap();
+        let (tile, pos) = ws.canvas().tiles_with_render_positions().next().unwrap();
+        let size = tile.tile_size();
+        Point::<f64, Logical>::from((pos.x + size.w / 2., pos.y + size.h / 2.))
+    };
+
+    layout.active_workspace_mut().unwrap().set_canvas_mode(false);
+
+    let ws = layout.active_workspace().unwrap();
+    // Tile is still present in canvas (we don't migrate on toggle), but it's invisible and
+    // must not be hit-testable — otherwise the user would "click" an unrendered window.
+    assert!(ws.canvas().has_window(&3));
+    assert!(ws.window_under(hit_point).is_none());
+}
+
+#[test]
 fn canvas_tiles_flow_through_workspace_iterators() {
     let mut layout = Layout::default();
     Op::AddOutput(1).apply(&mut layout);

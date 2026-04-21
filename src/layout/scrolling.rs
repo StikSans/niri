@@ -2441,6 +2441,20 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.view_offset_y = ViewOffsetY::Static(y);
     }
 
+    /// Pans the 2D camera by `(dx, dy)` in canvas-space units, with a spring animation.
+    ///
+    /// X-axis panning is ignored when the space is empty (view_offset is anchored to the active
+    /// column, and there is no column). Y-axis is free to pan in any state.
+    pub fn pan_camera(&mut self, dx: f64, dy: f64) {
+        if dx != 0. && !self.columns.is_empty() {
+            let new_x = self.view_offset.target() + dx;
+            self.animate_view_offset(self.active_column_idx, new_x);
+        }
+        if dy != 0. {
+            self.animate_view_pos_y(self.target_view_pos_y() + dy);
+        }
+    }
+
     /// Animates Y just enough to bring the active tile's vertical range fully into view.
     ///
     /// No-op if the active tile is already fully visible on Y. No-op if there is no active tile.
@@ -2456,13 +2470,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             .clone();
 
         let Some((canvas_y, tile_h)) =
-            self.tiles_with_canvas_positions().find_map(|(tile, canvas)| {
-                if tile.window().id() == &active_id {
-                    Some((canvas.y, tile.tile_size().h))
-                } else {
-                    None
-                }
-            })
+            self.tiles_with_canvas_positions()
+                .find_map(|(tile, canvas)| {
+                    if tile.window().id() == &active_id {
+                        Some((canvas.y, tile.tile_size().h))
+                    } else {
+                        None
+                    }
+                })
         else {
             return;
         };
@@ -2571,12 +2586,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     .map(move |(tile, tile_off, visible)| {
                         // Canvas position derived inline: `col_x + tile_off` is this tile's 2D
                         // canvas coordinate. screen_pos = canvas_pos - camera + animation offsets.
-                        let canvas =
-                            Point::<f64, Canvas>::from((col_x + tile_off.x, tile_off.y));
-                        let pos =
-                            Self::canvas_to_screen_base(canvas, view_pos, view_pos_y)
-                                + col_render_off
-                                + tile.render_offset();
+                        let canvas = Point::<f64, Canvas>::from((col_x + tile_off.x, tile_off.y));
+                        let pos = Self::canvas_to_screen_base(canvas, view_pos, view_pos_y)
+                            + col_render_off
+                            + tile.render_offset();
                         // Round to physical pixels.
                         let pos = pos.to_physical_precise_round(scale).to_logical(scale);
                         (tile, pos, visible)
@@ -2596,8 +2609,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let col_render_off = col.render_offset();
                 col.tiles_in_render_order_mut()
                     .map(move |(tile, tile_off)| {
-                        let canvas =
-                            Point::<f64, Canvas>::from((col_x + tile_off.x, tile_off.y));
+                        let canvas = Point::<f64, Canvas>::from((col_x + tile_off.x, tile_off.y));
                         let mut pos = ScrollingSpace::<W>::canvas_to_screen_base(
                             canvas, view_pos, view_pos_y,
                         ) + col_render_off

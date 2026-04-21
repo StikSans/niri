@@ -1950,6 +1950,14 @@ impl<W: LayoutElement> Layout<W> {
         workspace.focus_spatial(direction)
     }
 
+    /// Pan the 2D camera on the active workspace by `(dx, dy)`.
+    pub fn pan_camera(&mut self, dx: f64, dy: f64) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.pan_camera(dx, dy);
+    }
+
     pub fn focus_column_first(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;

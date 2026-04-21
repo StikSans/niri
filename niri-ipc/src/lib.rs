@@ -374,6 +374,16 @@ pub enum Action {
     FocusSpatialUp {},
     /// Focus the nearest window below by 2D canvas position.
     FocusSpatialDown {},
+    /// Pan the 2D camera by `(dx, dy)` in canvas-space units.
+    ///
+    /// Positive `dx` pans right, positive `dy` pans down. Animates with the
+    /// horizontal-view-movement spring configuration.
+    PanCamera {
+        /// Horizontal offset to add to the camera position.
+        dx: f64,
+        /// Vertical offset to add to the camera position.
+        dy: f64,
+    },
     /// Focus the window below or the column to the left.
     FocusWindowDownOrColumnLeft {},
     /// Focus the window below or the column to the right.

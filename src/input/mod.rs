@@ -1231,6 +1231,11 @@ impl State {
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
+            Action::PanCamera(dx, dy) => {
+                self.niri.layout.pan_camera(dx, dy);
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
             Action::FocusWindowDownOrColumnLeft => {
                 self.niri.layout.focus_down_or_left();
                 self.maybe_warp_cursor_to_focus();

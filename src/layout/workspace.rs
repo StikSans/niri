@@ -1045,12 +1045,7 @@ impl<W: LayoutElement> Workspace<W> {
             Some((_, false, id)) => {
                 self.focus_tiling();
                 let activated = self.scrolling.activate_window(&id);
-                if activated
-                    && matches!(
-                        direction,
-                        SpatialDirection::Up | SpatialDirection::Down
-                    )
-                {
+                if activated && matches!(direction, SpatialDirection::Up | SpatialDirection::Down) {
                     // X-axis centering is already handled by activate_window via
                     // animate_view_offset_to_column. For Y, bring the active tile into view
                     // with a fit rule (scroll only if needed).
@@ -1060,6 +1055,11 @@ impl<W: LayoutElement> Workspace<W> {
             }
             None => false,
         }
+    }
+
+    /// Pan the 2D camera on this workspace by `(dx, dy)` with a spring animation.
+    pub fn pan_camera(&mut self, dx: f64, dy: f64) {
+        self.scrolling.pan_camera(dx, dy);
     }
 
     pub fn focus_down_or_left(&mut self) {

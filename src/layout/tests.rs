@@ -479,6 +479,12 @@ enum Op {
     FocusSpatialRight,
     FocusSpatialUp,
     FocusSpatialDown,
+    PanCamera {
+        #[proptest(strategy = "-500f64..=500f64")]
+        dx: f64,
+        #[proptest(strategy = "-500f64..=500f64")]
+        dy: f64,
+    },
     FocusWindowDownOrColumnLeft,
     FocusWindowDownOrColumnRight,
     FocusWindowUpOrColumnLeft,
@@ -1139,6 +1145,7 @@ impl Op {
             Op::FocusSpatialDown => {
                 layout.focus_spatial(SpatialDirection::Down);
             }
+            Op::PanCamera { dx, dy } => layout.pan_camera(dx, dy),
             Op::FocusWindowDownOrColumnLeft => layout.focus_down_or_left(),
             Op::FocusWindowDownOrColumnRight => layout.focus_down_or_right(),
             Op::FocusWindowUpOrColumnLeft => layout.focus_up_or_left(),
@@ -2134,7 +2141,11 @@ fn y_camera_animates_when_spatial_focus_target_is_out_of_view() {
     // Focus the top tile and verify the camera didn't move on its own.
     Op::FocusWindow(0).apply(&mut layout);
     assert_eq!(
-        layout.active_workspace().unwrap().scrolling().target_view_pos_y(),
+        layout
+            .active_workspace()
+            .unwrap()
+            .scrolling()
+            .target_view_pos_y(),
         -1000.
     );
 
@@ -2167,7 +2178,11 @@ fn y_camera_is_noop_when_active_tile_already_visible() {
 
     Op::FocusWindow(0).apply(&mut layout);
     assert_eq!(
-        layout.active_workspace().unwrap().scrolling().target_view_pos_y(),
+        layout
+            .active_workspace()
+            .unwrap()
+            .scrolling()
+            .target_view_pos_y(),
         0.
     );
 
@@ -2177,6 +2192,52 @@ fn y_camera_is_noop_when_active_tile_already_visible() {
     assert_eq!(*ws.scrolling().active_window().unwrap().id(), 1);
     // Both tiles fit in the viewport; Y must not move.
     assert_eq!(ws.scrolling().target_view_pos_y(), 0.);
+}
+
+#[test]
+fn pan_camera_moves_both_axes_on_active_workspace() {
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(0),
+    }
+    .apply(&mut layout);
+
+    let start_x = layout
+        .active_workspace()
+        .unwrap()
+        .scrolling()
+        .target_view_pos();
+    let start_y = layout
+        .active_workspace()
+        .unwrap()
+        .scrolling()
+        .target_view_pos_y();
+
+    Op::PanCamera { dx: 150., dy: 75. }.apply(&mut layout);
+
+    let ws = layout.active_workspace().unwrap();
+    assert!(
+        (ws.scrolling().target_view_pos() - (start_x + 150.)).abs() < 1e-6,
+        "X camera should have panned by dx"
+    );
+    assert!(
+        (ws.scrolling().target_view_pos_y() - (start_y + 75.)).abs() < 1e-6,
+        "Y camera should have panned by dy"
+    );
+}
+
+#[test]
+fn pan_camera_x_is_noop_when_empty() {
+    // No windows → no columns → X pan must not crash.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+
+    Op::PanCamera { dx: 100., dy: 50. }.apply(&mut layout);
+
+    let ws = layout.active_workspace().unwrap();
+    // Y still pans freely even with no columns.
+    assert!((ws.scrolling().target_view_pos_y() - 50.).abs() < 1e-6);
 }
 
 #[test]

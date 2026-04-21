@@ -1383,8 +1383,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             data2.update_config(self.working_area);
             assert_eq!(data, &data2, "tile data must be up to date");
 
-            let expected =
-                Point::<f64, Canvas>::from((data.logical_pos.x, data.logical_pos.y));
+            let expected = Point::<f64, Canvas>::from((data.logical_pos.x, data.logical_pos.y));
             let actual = tile.canvas_pos();
             let dx = (expected.x - actual.x).abs();
             let dy = (expected.y - actual.y).abs();

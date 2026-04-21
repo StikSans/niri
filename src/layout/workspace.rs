@@ -17,7 +17,7 @@ use smithay::utils::{Logical, Point, Rectangle, Serial, Size, Transform};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::SurfaceCachedState;
 
-use super::canvas_space::CanvasSpace;
+use super::canvas_space::{CanvasSpace, CanvasSpaceRenderElement};
 use super::floating::{FloatingSpace, FloatingSpaceRenderElement};
 use super::scrolling::{
     Column, ColumnWidth, ScrollDirection, ScrollingSpace, ScrollingSpaceRenderElement,
@@ -163,6 +163,7 @@ niri_render_elements! {
     WorkspaceRenderElement<R> => {
         Scrolling = ScrollingSpaceRenderElement<R>,
         Floating = FloatingSpaceRenderElement<R>,
+        Canvas = CanvasSpaceRenderElement<R>,
     }
 }
 
@@ -1839,6 +1840,23 @@ impl<W: LayoutElement> Workspace<W> {
         let floating_focus_ring = focus_ring && self.floating_is_active();
         self.floating
             .render(ctx, xray_pos, view_rect, floating_focus_ring, &mut |elem| {
+                push(elem.into())
+            });
+    }
+
+    pub fn render_canvas<R: NiriRenderer>(
+        &self,
+        ctx: RenderCtx<R>,
+        xray_pos: XrayPos,
+        focus_ring: bool,
+        push: &mut dyn FnMut(WorkspaceRenderElement<R>),
+    ) {
+        if !self.canvas_mode {
+            return;
+        }
+        let canvas_focus_ring = focus_ring;
+        self.canvas
+            .render(ctx, xray_pos, canvas_focus_ring, &mut |elem| {
                 push(elem.into())
             });
     }

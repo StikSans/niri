@@ -11,9 +11,19 @@ use std::rc::Rc;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use super::scrolling::SpatialDirection;
-use super::tile::Tile;
+use super::tile::{Tile, TileRenderElement};
 use super::{Canvas, HitType, LayoutElement, Options};
 use crate::animation::{Animation, Clock};
+use crate::niri_render_elements;
+use crate::render_helpers::renderer::NiriRenderer;
+use crate::render_helpers::xray::XrayPos;
+use crate::render_helpers::RenderCtx;
+
+niri_render_elements! {
+    CanvasSpaceRenderElement<R> => {
+        Tile = TileRenderElement<R>,
+    }
+}
 
 /// A 2D canvas populated by free-placement tiles.
 #[derive(Debug)]
@@ -207,6 +217,27 @@ impl<W: LayoutElement> CanvasSpace<W> {
         };
         tile.update_window();
         true
+    }
+
+    /// Emit render elements for every tile at its camera-offset screen-space position.
+    ///
+    /// Mirrors the shape of [`FloatingSpace::render`] / [`ScrollingSpace::render`]: the caller
+    /// supplies a push callback that receives a [`CanvasSpaceRenderElement`] per element.
+    pub fn render<R: NiriRenderer>(
+        &self,
+        mut ctx: RenderCtx<R>,
+        xray_pos: XrayPos,
+        focus_ring: bool,
+        push: &mut dyn FnMut(CanvasSpaceRenderElement<R>),
+    ) {
+        let active = self.active_id.clone();
+        for (tile, tile_pos) in self.tiles_with_render_positions() {
+            let focus_ring = focus_ring && Some(tile.window().id()) == active.as_ref();
+            let xray_pos = xray_pos.offset(tile_pos);
+            tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
+                push(elem.into())
+            });
+        }
     }
 
     /// Hit-test the canvas at the given logical screen-space point.

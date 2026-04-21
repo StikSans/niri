@@ -1746,6 +1746,8 @@ impl<W: LayoutElement> Monitor<W> {
             }
 
             ws.render_scrolling(ctx.r(), xray_pos, focus_ring, push!());
+
+            ws.render_canvas(ctx.r(), xray_pos, focus_ring, push!());
         }
     }
 

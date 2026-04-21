@@ -1999,7 +1999,10 @@ impl<W: LayoutElement> Workspace<W> {
         window: &W::Id,
         blocker: TransactionBlocker,
     ) {
-        if self.floating.has_window(window) {
+        if self.canvas.has_window(window) {
+            self.canvas
+                .start_close_animation_for_window(renderer, window, blocker);
+        } else if self.floating.has_window(window) {
             self.floating
                 .start_close_animation_for_window(renderer, window, blocker);
         } else {

@@ -8,20 +8,24 @@
 
 use std::rc::Rc;
 
-use smithay::utils::{Logical, Point, Rectangle, Size};
+use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 
+use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::scrolling::SpatialDirection;
-use super::tile::{Tile, TileRenderElement};
+use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::{Canvas, HitType, LayoutElement, Options};
 use crate::animation::{Animation, Clock};
 use crate::niri_render_elements;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::RenderCtx;
+use crate::utils::transaction::TransactionBlocker;
 
 niri_render_elements! {
     CanvasSpaceRenderElement<R> => {
         Tile = TileRenderElement<R>,
+        ClosingWindow = ClosingWindowRenderElement,
     }
 }
 
@@ -51,6 +55,9 @@ pub struct CanvasSpace<W: LayoutElement> {
 
     /// Output scale for physical-pixel rounding.
     scale: f64,
+
+    /// Tiles whose source window has gone away but whose close animation is still running.
+    closing_windows: Vec<ClosingWindow>,
 
     /// Clock for driving animations.
     clock: Clock,
@@ -106,6 +113,7 @@ impl<W: LayoutElement> CanvasSpace<W> {
             view_size,
             working_area,
             scale,
+            closing_windows: Vec::new(),
             clock,
             options,
         }
@@ -242,6 +250,18 @@ impl<W: LayoutElement> CanvasSpace<W> {
         focus_ring: bool,
         push: &mut dyn FnMut(CanvasSpaceRenderElement<R>),
     ) {
+        let scale = Scale::from(self.scale);
+
+        // Draw closing-window animations on top of tiles so a tile that's mid-close doesn't get
+        // occluded by unrelated canvas tiles that happen to be in front in insertion order.
+        // The view_rect for canvas is always anchored at (0, 0) in screen-space — the camera
+        // offset is baked into ClosingWindow::pos when the animation starts.
+        let view_rect = Rectangle::from_size(self.view_size);
+        for closing in self.closing_windows.iter().rev() {
+            let elem = closing.render(ctx.as_gles(), view_rect, scale);
+            push(elem.into());
+        }
+
         let active = self.active_id.clone();
         for (tile, tile_pos) in self.tiles_with_render_positions() {
             let focus_ring = focus_ring && Some(tile.window().id()) == active.as_ref();
@@ -249,6 +269,70 @@ impl<W: LayoutElement> CanvasSpace<W> {
             tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
                 push(elem.into())
             });
+        }
+    }
+
+    /// Start a close animation for a tile still present on this canvas.
+    ///
+    /// Snapshots the tile's current render contents, then hands off to
+    /// [`start_close_animation_for_tile`]. The caller removes the tile separately.
+    pub fn start_close_animation_for_window(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        id: &W::Id,
+        blocker: TransactionBlocker,
+    ) {
+        let (tile, tile_pos) = match self
+            .tiles_with_render_positions_mut(false)
+            .find(|(tile, _)| tile.window().id() == id)
+        {
+            Some(rv) => rv,
+            None => return,
+        };
+
+        let Some(snapshot) = tile.take_unmap_snapshot() else {
+            return;
+        };
+
+        let tile_size = tile.tile_size();
+
+        self.start_close_animation_for_tile(renderer, snapshot, tile_size, tile_pos, blocker);
+    }
+
+    /// Drive a close animation from a pre-captured snapshot at the given screen-space position.
+    pub fn start_close_animation_for_tile(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        snapshot: TileRenderSnapshot,
+        tile_size: Size<f64, Logical>,
+        tile_pos: Point<f64, Logical>,
+        blocker: TransactionBlocker,
+    ) {
+        let anim = Animation::new(
+            self.clock.clone(),
+            0.,
+            1.,
+            0.,
+            self.options.animations.window_close.anim,
+        );
+
+        let blocker = if self.options.disable_transactions {
+            TransactionBlocker::completed()
+        } else {
+            blocker
+        };
+
+        let scale = Scale::from(self.scale);
+        let res = ClosingWindow::new(
+            renderer, snapshot, scale, tile_size, tile_pos, blocker, anim,
+        );
+        match res {
+            Ok(closing) => {
+                self.closing_windows.push(closing);
+            }
+            Err(err) => {
+                tracing::warn!("error creating a closing window animation: {err:?}");
+            }
         }
     }
 
@@ -530,18 +614,24 @@ impl<W: LayoutElement> CanvasSpace<W> {
         for tile in &mut self.tiles {
             tile.advance_animations();
         }
+        self.closing_windows.retain_mut(|closing| {
+            closing.advance_animations();
+            closing.are_animations_ongoing()
+        });
     }
 
     pub fn are_animations_ongoing(&self) -> bool {
         self.view_offset_x.is_animation_ongoing()
             || self.view_offset_y.is_animation_ongoing()
             || self.tiles.iter().any(Tile::are_animations_ongoing)
+            || !self.closing_windows.is_empty()
     }
 
     pub fn are_transitions_ongoing(&self) -> bool {
         !self.view_offset_x.is_static()
             || !self.view_offset_y.is_static()
             || self.tiles.iter().any(Tile::are_transitions_ongoing)
+            || !self.closing_windows.is_empty()
     }
 
     pub fn update_render_elements(&mut self, is_active: bool) {

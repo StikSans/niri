@@ -348,6 +348,7 @@ pub enum Action {
     FocusFloating,
     FocusTiling,
     SwitchFocusBetweenFloatingAndTiling,
+    ToggleCanvasMode,
     #[knuffel(skip)]
     MoveFloatingWindowById {
         id: Option<u64>,
@@ -688,6 +689,7 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::SwitchFocusBetweenFloatingAndTiling {} => {
                 Self::SwitchFocusBetweenFloatingAndTiling
             }
+            niri_ipc::Action::ToggleCanvasMode {} => Self::ToggleCanvasMode,
             niri_ipc::Action::MoveFloatingWindow { id, x, y } => {
                 Self::MoveFloatingWindowById { id, x, y }
             }

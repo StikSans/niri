@@ -3246,6 +3246,14 @@ impl<W: LayoutElement> Layout<W> {
         workspace.set_window_floating(window, floating);
     }
 
+    pub fn toggle_canvas_mode(&mut self) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        let on = !workspace.canvas_mode();
+        workspace.set_canvas_mode(on);
+    }
+
     pub fn focus_floating(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;

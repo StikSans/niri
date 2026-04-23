@@ -950,6 +950,11 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long))]
         id: u64,
     },
+    /// Toggle canvas mode on the active workspace.
+    ///
+    /// In canvas mode, new windows are placed freely on a 2D infinite canvas instead of the
+    /// scrollable-tiling layout.
+    ToggleCanvasMode {},
     /// Reload the config file.
     ///
     /// Can be useful for scripts changing the config file, to avoid waiting the small duration for

@@ -279,11 +279,12 @@ impl<W: LayoutElement> Workspace<W> {
         let shadow_config =
             compute_workspace_shadow_config(options.overview.workspace_shadow, view_size);
 
+        let canvas_mode = options.layout.canvas_mode;
         Self {
             scrolling,
             floating,
             canvas,
-            canvas_mode: false,
+            canvas_mode,
             canvas_placement_counter: 0,
             floating_is_active: FloatingActive::No,
             original_output,
@@ -354,11 +355,12 @@ impl<W: LayoutElement> Workspace<W> {
         let shadow_config =
             compute_workspace_shadow_config(options.overview.workspace_shadow, view_size);
 
+        let canvas_mode = options.layout.canvas_mode;
         Self {
             scrolling,
             floating,
             canvas,
-            canvas_mode: false,
+            canvas_mode,
             canvas_placement_counter: 0,
             floating_is_active: FloatingActive::No,
             output: None,
@@ -485,6 +487,8 @@ impl<W: LayoutElement> Workspace<W> {
 
         self.background_buffer
             .set_color(options.layout.background_color);
+
+        self.canvas_mode = options.layout.canvas_mode;
 
         self.base_options = base_options;
         self.options = options;

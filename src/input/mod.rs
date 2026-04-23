@@ -2145,6 +2145,11 @@ impl State {
                     }
                 }
             }
+            Action::ToggleCanvasMode => {
+                self.niri.layout.toggle_canvas_mode();
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
             Action::ToggleWindowFloating => {
                 self.niri.layout.toggle_window_floating(None);
                 // FIXME: granular

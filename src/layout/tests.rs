@@ -4934,3 +4934,175 @@ fn canvas_mode_manual_toggle_survives_update_config() {
         "manual canvas_mode toggle was clobbered by update_config",
     );
 }
+
+#[test]
+fn canvas_mode_toggle_overview_preserves_state() {
+    // Toggling the overview on a canvas workspace must preserve canvas_mode, tile canvas_pos
+    // and camera. The overview is a view transform, not a state-destroying mode.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(5),
+    }
+    .apply(&mut layout);
+
+    let target_tile_pos = Point::<f64, super::Canvas>::from((320.0, 180.0));
+    let target_camera = Point::<f64, super::Canvas>::from((64.0, 32.0));
+    {
+        let ws = layout.active_workspace_mut().unwrap();
+        assert!(ws.canvas_mut().move_tile_to(&5, target_tile_pos));
+        ws.canvas_mut().set_view_pos(target_camera);
+    }
+
+    layout.verify_invariants();
+
+    // Open overview fully.
+    Op::ToggleOverview.apply(&mut layout);
+    Op::CompleteAnimations.apply(&mut layout);
+    layout.verify_invariants();
+
+    // Canvas state is untouched in overview.
+    {
+        let ws = layout.active_workspace().unwrap();
+        assert!(ws.canvas_mode());
+        assert!(ws.canvas().has_window(&5));
+        let (_, pos) = ws.canvas().tiles_with_canvas_positions().next().unwrap();
+        assert!((pos.x - target_tile_pos.x).abs() < 1e-6);
+        assert!((pos.y - target_tile_pos.y).abs() < 1e-6);
+        let cam = ws.canvas().view_pos();
+        assert!((cam.x - target_camera.x).abs() < 1e-6);
+        assert!((cam.y - target_camera.y).abs() < 1e-6);
+    }
+
+    // Close overview; still untouched.
+    Op::ToggleOverview.apply(&mut layout);
+    Op::CompleteAnimations.apply(&mut layout);
+    layout.verify_invariants();
+
+    let ws = layout.active_workspace().unwrap();
+    assert!(ws.canvas_mode());
+    let (_, pos) = ws.canvas().tiles_with_canvas_positions().next().unwrap();
+    assert!((pos.x - target_tile_pos.x).abs() < 1e-6);
+    assert!((pos.y - target_tile_pos.y).abs() < 1e-6);
+    let cam = ws.canvas().view_pos();
+    assert!((cam.x - target_camera.x).abs() < 1e-6);
+    assert!((cam.y - target_camera.y).abs() < 1e-6);
+}
+
+#[test]
+fn canvas_mode_overview_hit_tests_canvas_tile() {
+    // In overview, Monitor::window_under downscales the pointer by the overview zoom before
+    // calling workspace.window_under. A canvas tile must still be hittable at its downscaled
+    // on-screen position.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(8),
+    }
+    .apply(&mut layout);
+    layout.refresh(true);
+
+    // Find the output and the tile's workspace-local render position / size.
+    let output = layout
+        .outputs()
+        .find(|o| o.name() == "output1")
+        .cloned()
+        .unwrap();
+
+    let (tile_local_pos, tile_size) = {
+        let ws = layout.active_workspace().unwrap();
+        let (tile, pos) = ws.canvas().tiles_with_render_positions().next().unwrap();
+        (pos, tile.tile_size())
+    };
+
+    // Open overview fully.
+    Op::ToggleOverview.apply(&mut layout);
+    Op::CompleteAnimations.apply(&mut layout);
+    layout.verify_invariants();
+
+    let mon = layout.monitor_for_output(&output).unwrap();
+    let zoom = mon.overview_zoom();
+    let ws_geo = mon
+        .workspaces_with_render_geo()
+        .next()
+        .map(|(_, geo)| geo)
+        .unwrap();
+
+    // Center of the tile in overview screen coords.
+    let tile_center_local = Point::<f64, Logical>::from((
+        tile_local_pos.x + tile_size.w as f64 / 2.,
+        tile_local_pos.y + tile_size.h as f64 / 2.,
+    ));
+    let overview_hit = Point::<f64, Logical>::from((
+        ws_geo.loc.x + tile_center_local.x * zoom,
+        ws_geo.loc.y + tile_center_local.y * zoom,
+    ));
+
+    let (win, _) = layout
+        .window_under(&output, overview_hit)
+        .expect("canvas tile must be hit-testable in overview");
+    assert_eq!(*win.id(), 8);
+}
+
+#[test]
+fn canvas_mode_workspace_switch_preserves_invariants() {
+    // Switch between a canvas workspace and a scrolling workspace. Invariants must hold at
+    // every step, and each workspace's own state must be preserved across the switch.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+
+    // ws0: canvas workspace with a canvas tile at a non-default canvas_pos.
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+    Op::AddWindow {
+        params: TestWindowParams::new(100),
+    }
+    .apply(&mut layout);
+    let canvas_pos = Point::<f64, super::Canvas>::from((210.0, 140.0));
+    {
+        let ws = layout.active_workspace_mut().unwrap();
+        assert!(ws.canvas_mut().move_tile_to(&100, canvas_pos));
+    }
+    layout.sync_canvas_positions();
+    layout.verify_invariants();
+
+    // ws1: scrolling workspace with one scrolling tile. FocusWorkspaceDown implicitly creates
+    // the next empty workspace if needed.
+    Op::FocusWorkspaceDown.apply(&mut layout);
+    Op::CompleteAnimations.apply(&mut layout);
+    assert!(!layout.active_workspace().unwrap().canvas_mode());
+    Op::AddWindow {
+        params: TestWindowParams::new(200),
+    }
+    .apply(&mut layout);
+    layout.sync_canvas_positions();
+    layout.verify_invariants();
+
+    // Switch back up to the canvas workspace. Canvas state survives.
+    Op::FocusWorkspaceUp.apply(&mut layout);
+    Op::CompleteAnimations.apply(&mut layout);
+    layout.sync_canvas_positions();
+    layout.verify_invariants();
+    {
+        let ws = layout.active_workspace().unwrap();
+        assert!(ws.canvas_mode());
+        assert!(ws.canvas().has_window(&100));
+        let (_, pos) = ws.canvas().tiles_with_canvas_positions().next().unwrap();
+        assert!((pos.x - canvas_pos.x).abs() < 1e-6);
+        assert!((pos.y - canvas_pos.y).abs() < 1e-6);
+    }
+
+    // And back down: scrolling workspace still has its window.
+    Op::FocusWorkspaceDown.apply(&mut layout);
+    Op::CompleteAnimations.apply(&mut layout);
+    layout.sync_canvas_positions();
+    layout.verify_invariants();
+    {
+        let ws = layout.active_workspace().unwrap();
+        assert!(!ws.canvas_mode());
+        assert!(ws.has_window(&200));
+    }
+}

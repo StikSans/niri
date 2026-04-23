@@ -4810,3 +4810,127 @@ fn canvas_mode_off_drag_drop_uses_scrolling() {
     assert!(ws.canvas().is_empty());
     assert!(!ws.scrolling().is_empty());
 }
+
+#[test]
+fn canvas_mode_persists_through_output_disconnect_reconnect() {
+    // Invariant #2: disconnect + reconnect must not change the layout. For canvas, that means
+    // canvas_mode, tile canvas_pos, and camera position all survive the round-trip.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(42),
+    }
+    .apply(&mut layout);
+
+    // Move the tile and camera to non-default values so we can tell if they get reset.
+    let target_tile_pos = Point::<f64, super::Canvas>::from((500.0, 300.0));
+    let target_camera = Point::<f64, super::Canvas>::from((150.0, 75.0));
+    {
+        let ws = layout.active_workspace_mut().unwrap();
+        assert!(ws.canvas_mut().move_tile_to(&42, target_tile_pos));
+        ws.canvas_mut().set_view_pos(target_camera);
+    }
+
+    // Round-trip: remove and re-add the output. The workspace goes through NoOutputs and back.
+    Op::RemoveOutput(1).apply(&mut layout);
+    Op::AddOutput(1).apply(&mut layout);
+
+    let ws = layout.active_workspace().unwrap();
+    assert!(ws.canvas_mode(), "canvas_mode flag must survive reconnect");
+    assert!(ws.canvas().has_window(&42), "canvas tile must survive reconnect");
+
+    let (_, restored_pos) = ws
+        .canvas()
+        .tiles_with_canvas_positions()
+        .next()
+        .expect("one canvas tile");
+    assert!(
+        (restored_pos.x - target_tile_pos.x).abs() < 1e-6
+            && (restored_pos.y - target_tile_pos.y).abs() < 1e-6,
+        "canvas_pos changed across disconnect/reconnect: {:?} -> {:?}",
+        target_tile_pos,
+        restored_pos,
+    );
+
+    let restored_camera = ws.canvas().view_pos();
+    assert!(
+        (restored_camera.x - target_camera.x).abs() < 1e-6
+            && (restored_camera.y - target_camera.y).abs() < 1e-6,
+        "camera position changed across disconnect/reconnect: {:?} -> {:?}",
+        target_camera,
+        restored_camera,
+    );
+}
+
+#[test]
+fn canvas_mode_preserved_on_workspace_migration_between_outputs() {
+    // Two outputs: canvas tile lives on output 2. When output 2 disconnects, the workspace
+    // migrates to output 1 (primary). Its canvas state must survive. When output 2 is re-added,
+    // the workspace migrates back with state intact.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    Op::AddOutput(2).apply(&mut layout);
+    Op::FocusOutput(2).apply(&mut layout);
+
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(7),
+    }
+    .apply(&mut layout);
+
+    let target_pos = Point::<f64, super::Canvas>::from((250.0, 400.0));
+    {
+        let ws = layout.active_workspace_mut().unwrap();
+        assert!(ws.canvas_mut().move_tile_to(&7, target_pos));
+    }
+
+    // Disconnect the output that owns the canvas workspace.
+    Op::RemoveOutput(2).apply(&mut layout);
+
+    // The workspace and its canvas tile must still exist on the primary monitor.
+    let (_, _, ws) = layout
+        .workspaces()
+        .find(|(_, _, ws)| ws.canvas().has_window(&7))
+        .expect("canvas workspace migrated to primary");
+    assert!(ws.canvas_mode());
+    let (_, pos) = ws.canvas().tiles_with_canvas_positions().next().unwrap();
+    assert!((pos.x - target_pos.x).abs() < 1e-6 && (pos.y - target_pos.y).abs() < 1e-6);
+
+    // Re-add the original output; the workspace migrates back and state is preserved.
+    Op::AddOutput(2).apply(&mut layout);
+
+    let (_, _, ws) = layout
+        .workspaces()
+        .find(|(_, _, ws)| ws.canvas().has_window(&7))
+        .expect("canvas workspace returned to its original output");
+    assert!(ws.canvas_mode());
+    let (_, pos) = ws.canvas().tiles_with_canvas_positions().next().unwrap();
+    assert!(
+        (pos.x - target_pos.x).abs() < 1e-6 && (pos.y - target_pos.y).abs() < 1e-6,
+        "canvas_pos changed across migration: {:?} -> {:?}",
+        target_pos,
+        pos,
+    );
+}
+
+#[test]
+fn canvas_mode_manual_toggle_survives_update_config() {
+    // Regression: update_config must not clobber the workspace's canvas_mode flag even when
+    // the current options.layout.canvas_mode differs from the manually toggled value.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+
+    // Config says canvas_mode=off. User toggles it on via ToggleCanvasMode.
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+    assert!(layout.active_workspace().unwrap().canvas_mode());
+
+    // Trigger update_config (e.g. via update_options). canvas_mode must stay on.
+    layout.update_options(Options::default());
+    assert!(
+        layout.active_workspace().unwrap().canvas_mode(),
+        "manual canvas_mode toggle was clobbered by update_config",
+    );
+}

@@ -488,7 +488,11 @@ impl<W: LayoutElement> Workspace<W> {
         self.background_buffer
             .set_color(options.layout.background_color);
 
-        self.canvas_mode = options.layout.canvas_mode;
+        // Note: canvas_mode is NOT synced from options here. It is workspace-state that is
+        // initialized from config on creation (see new_with_config) and then mutated via
+        // set_canvas_mode (e.g. the ToggleCanvasMode action). Re-syncing on config reload or
+        // output migration would clobber manual toggles and violate the disconnect/reconnect
+        // layout-invariance invariant.
 
         self.base_options = base_options;
         self.options = options;

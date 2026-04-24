@@ -4482,8 +4482,8 @@ mod canvas_space_tests {
         let mut space = make_space();
         let t = make_tile(&space, 1);
         space.add_tile(t, Point::from((0., 0.)));
-        assert!(space.update_window(&1));
-        assert!(!space.update_window(&999));
+        assert!(space.update_window(&1, None));
+        assert!(!space.update_window(&999, None));
     }
 
     #[test]
@@ -4514,7 +4514,9 @@ mod canvas_space_tests {
         assert_eq!(*w.id(), 42);
 
         // Point far outside.
-        assert!(space.window_under(Point::from((2000., 2000.)), None).is_none());
+        assert!(space
+            .window_under(Point::from((2000., 2000.)), None)
+            .is_none());
     }
 
     #[test]
@@ -4637,7 +4639,10 @@ fn canvas_tiles_not_hit_tested_when_canvas_mode_off() {
         Point::<f64, Logical>::from((pos.x + size.w / 2., pos.y + size.h / 2.))
     };
 
-    layout.active_workspace_mut().unwrap().set_canvas_mode(false);
+    layout
+        .active_workspace_mut()
+        .unwrap()
+        .set_canvas_mode(false);
 
     let ws = layout.active_workspace().unwrap();
     // Tile is still present in canvas (we don't migrate on toggle), but it's invisible and
@@ -4839,7 +4844,10 @@ fn canvas_mode_persists_through_output_disconnect_reconnect() {
 
     let ws = layout.active_workspace().unwrap();
     assert!(ws.canvas_mode(), "canvas_mode flag must survive reconnect");
-    assert!(ws.canvas().has_window(&42), "canvas tile must survive reconnect");
+    assert!(
+        ws.canvas().has_window(&42),
+        "canvas tile must survive reconnect"
+    );
 
     let (_, restored_pos) = ws
         .canvas()
@@ -5064,8 +5072,18 @@ fn canvas_content_bounds_and_overview_fit() {
     layout.active_workspace_mut().unwrap().set_canvas_mode(true);
 
     // Empty canvas: no bounds, no fit.
-    assert!(layout.active_workspace().unwrap().canvas().content_bounds().is_none());
-    assert!(layout.active_workspace().unwrap().canvas().overview_fit().is_none());
+    assert!(layout
+        .active_workspace()
+        .unwrap()
+        .canvas()
+        .content_bounds()
+        .is_none());
+    assert!(layout
+        .active_workspace()
+        .unwrap()
+        .canvas()
+        .overview_fit()
+        .is_none());
 
     // One small tile — bbox has the tile's size, fit scale is 1.0 (the tile fits view_size).
     Op::AddWindow {
@@ -5097,7 +5115,12 @@ fn canvas_content_bounds_and_overview_fit() {
     assert!((bbox.size.w - tile_w).abs() < 1e-6);
     assert!((bbox.size.h - tile_h).abs() < 1e-6);
 
-    let fit = layout.active_workspace().unwrap().canvas().overview_fit().unwrap();
+    let fit = layout
+        .active_workspace()
+        .unwrap()
+        .canvas()
+        .overview_fit()
+        .unwrap();
     // For a small bbox the fit caps at 1.0.
     assert!((fit.scale - 1.0).abs() < 1e-6);
 }
@@ -5124,7 +5147,9 @@ fn canvas_overview_fit_scales_down_spread_out_content() {
         let ws = layout.active_workspace_mut().unwrap();
         assert!(ws.canvas_mut().move_tile_to(&1, Point::from((0., 0.))));
         // Force the bbox beyond the 1280x720 test output.
-        assert!(ws.canvas_mut().move_tile_to(&2, Point::from((2000., 1500.))));
+        assert!(ws
+            .canvas_mut()
+            .move_tile_to(&2, Point::from((2000., 1500.))));
     }
 
     let canvas = {
@@ -5133,7 +5158,11 @@ fn canvas_overview_fit_scales_down_spread_out_content() {
     };
     let fit = canvas.overview_fit().expect("populated canvas has a fit");
     assert!(fit.scale > 0.0);
-    assert!(fit.scale < 1.0, "scale must shrink to fit; got {}", fit.scale);
+    assert!(
+        fit.scale < 1.0,
+        "scale must shrink to fit; got {}",
+        fit.scale
+    );
 
     // Both tiles' visual rects must land inside the view_size (1280 x 720) when transformed.
     for (tile, canvas_pos) in canvas.tiles_with_canvas_positions() {
@@ -5142,10 +5171,26 @@ fn canvas_overview_fit_scales_down_spread_out_content() {
         let top = (canvas_pos.y - fit.view_pos.y) * fit.scale;
         let right = left + size.w * fit.scale;
         let bottom = top + size.h * fit.scale;
-        assert!(left >= -1e-3, "tile {} left escapes view: {left}", tile.window().id());
-        assert!(top >= -1e-3, "tile {} top escapes view: {top}", tile.window().id());
-        assert!(right <= 1280.0 + 1e-3, "tile {} right escapes view: {right}", tile.window().id());
-        assert!(bottom <= 720.0 + 1e-3, "tile {} bottom escapes view: {bottom}", tile.window().id());
+        assert!(
+            left >= -1e-3,
+            "tile {} left escapes view: {left}",
+            tile.window().id()
+        );
+        assert!(
+            top >= -1e-3,
+            "tile {} top escapes view: {top}",
+            tile.window().id()
+        );
+        assert!(
+            right <= 1280.0 + 1e-3,
+            "tile {} right escapes view: {right}",
+            tile.window().id()
+        );
+        assert!(
+            bottom <= 720.0 + 1e-3,
+            "tile {} bottom escapes view: {bottom}",
+            tile.window().id()
+        );
     }
 }
 
@@ -5282,4 +5327,75 @@ fn canvas_mode_workspace_switch_preserves_invariants() {
         assert!(!ws.canvas_mode());
         assert!(ws.has_window(&200));
     }
+}
+
+#[test]
+fn canvas_mode_interactive_resize_routes_to_canvas() {
+    // Regression: Workspace::interactive_resize_* used to only check floating vs. scrolling, so
+    // canvas tiles silently fell through to scrolling and never resized. Route canvas-mode tiles
+    // into CanvasSpace's own resize path, and verify the window's requested_size reflects the
+    // drag delta while canvas_pos is preserved.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(42),
+    }
+    .apply(&mut layout);
+    layout.refresh(true);
+
+    let canvas_pos = Point::<f64, super::Canvas>::from((120.0, 80.0));
+    {
+        let ws = layout.active_workspace_mut().unwrap();
+        assert!(ws.canvas_mut().move_tile_to(&42, canvas_pos));
+    }
+
+    // Initial window size is 100x200 (TestWindowParams::new default bbox).
+    let original_size = {
+        let (_, win) = layout.windows().find(|(_, w)| *w.id() == 42).unwrap();
+        win.size()
+    };
+    assert_eq!(original_size.w, 100);
+    assert_eq!(original_size.h, 200);
+
+    // Drag the BOTTOM_RIGHT corner by (+50, +30). Both axes should update.
+    assert!(layout.interactive_resize_begin(42, ResizeEdge::BOTTOM_RIGHT));
+    assert!(layout.interactive_resize_update(&42, Point::from((50., 30.))));
+
+    let (_, win) = layout.windows().find(|(_, w)| *w.id() == 42).unwrap();
+    let requested = win
+        .requested_size()
+        .expect("canvas resize must have issued a size request");
+    assert_eq!(requested.w, 150, "width should grow by dx");
+    assert_eq!(requested.h, 230, "height should grow by dy");
+
+    // The tile's canvas position must NOT move during resize — resize is a size change only.
+    {
+        let ws = layout.active_workspace().unwrap();
+        let (_, pos) = ws.canvas().tiles_with_canvas_positions().next().unwrap();
+        assert!((pos.x - canvas_pos.x).abs() < 1e-6);
+        assert!((pos.y - canvas_pos.y).abs() < 1e-6);
+    }
+
+    layout.interactive_resize_end(&42);
+
+    // Drive the test window's configure response so its bbox picks up the resized size. Without
+    // this, a subsequent resize_begin would snapshot the stale pre-resize size.
+    Op::Communicate(42).apply(&mut layout);
+
+    // After end, a subsequent begin must be accepted (state was cleared).
+    assert!(layout.interactive_resize_begin(42, ResizeEdge::TOP_LEFT));
+    // TOP edge inverts dy: a +20 cursor delta shrinks by 20. LEFT inverts dx: +10 shrinks by 10.
+    // Original captured at begin is now (150, 230) after Communicate applied the first resize.
+    assert!(layout.interactive_resize_update(&42, Point::from((10., 20.))));
+
+    let (_, win) = layout.windows().find(|(_, w)| *w.id() == 42).unwrap();
+    let requested = win.requested_size().unwrap();
+    assert_eq!(requested.w, 140);
+    assert_eq!(requested.h, 210);
+
+    layout.interactive_resize_end(&42);
+    layout.sync_canvas_positions();
+    layout.verify_invariants();
 }

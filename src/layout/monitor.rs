@@ -1610,8 +1610,7 @@ impl<W: LayoutElement> Monitor<W> {
             // the default workspace path would re-hit canvas tiles at their un-fit positions,
             // which don't match what's on screen in overview.
             if let Some(fit) = ws.canvas_overview_fit() {
-                let (win, hit) =
-                    ws.canvas_window_under_with_fit(pos_within_workspace, fit)?;
+                let (win, hit) = ws.canvas_window_under_with_fit(pos_within_workspace, fit)?;
                 return Some((win, hit.to_activate()));
             }
 

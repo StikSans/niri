@@ -8,22 +8,25 @@
 
 use std::rc::Rc;
 
+use niri_ipc::SizeChange;
 use smithay::backend::renderer::element::utils::{
     Relocate, RelocateRenderElement, RescaleRenderElement,
 };
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
+use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::scrolling::SpatialDirection;
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
-use super::{Canvas, HitType, LayoutElement, Options};
+use super::workspace::InteractiveResize;
+use super::{Canvas, HitType, InteractiveResizeData, LayoutElement, Options};
 use crate::animation::{Animation, Clock};
 use crate::niri_render_elements;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::RenderCtx;
 use crate::utils::transaction::TransactionBlocker;
+use crate::utils::{ensure_min_max_size, ResizeEdge};
 
 niri_render_elements! {
     CanvasSpaceRenderElement<R> => {
@@ -74,6 +77,9 @@ pub struct CanvasSpace<W: LayoutElement> {
 
     /// Tiles whose source window has gone away but whose close animation is still running.
     closing_windows: Vec<ClosingWindow>,
+
+    /// Active interactive resize for a canvas tile, if any.
+    interactive_resize: Option<InteractiveResize<W>>,
 
     /// Clock for driving animations.
     clock: Clock,
@@ -130,6 +136,7 @@ impl<W: LayoutElement> CanvasSpace<W> {
             working_area,
             scale,
             closing_windows: Vec::new(),
+            interactive_resize: None,
             clock,
             options,
         }
@@ -247,10 +254,13 @@ impl<W: LayoutElement> CanvasSpace<W> {
     ///
     /// Mirrors [`ScrollingSpace::update_window`] but without column resizing: in a canvas,
     /// each tile lives on its own canvas_pos, so resizing doesn't ripple to neighbors.
-    pub fn update_window(&mut self, id: &W::Id) -> bool {
+    pub fn update_window(&mut self, id: &W::Id, serial: Option<Serial>) -> bool {
         let Some(tile) = self.tiles.iter_mut().find(|t| t.window().id() == id) else {
             return false;
         };
+        if let Some(serial) = serial {
+            tile.window_mut().on_commit(serial);
+        }
         tile.update_window();
         true
     }
@@ -304,11 +314,11 @@ impl<W: LayoutElement> CanvasSpace<W> {
                     let focus_ring = focus_ring && Some(tile.window().id()) == active.as_ref();
                     let base = Self::canvas_to_screen_base(tile.canvas_pos(), fit.view_pos)
                         + tile.render_offset();
-                    let tile_pos = Point::<f64, Logical>::from((
-                        base.x * fit.scale,
-                        base.y * fit.scale,
-                    ));
-                    let tile_pos = tile_pos.to_physical_precise_round(self.scale).to_logical(self.scale);
+                    let tile_pos =
+                        Point::<f64, Logical>::from((base.x * fit.scale, base.y * fit.scale));
+                    let tile_pos = tile_pos
+                        .to_physical_precise_round(self.scale)
+                        .to_logical(self.scale);
                     let xray_pos = xray_pos.offset(tile_pos);
                     let anchor = tile_pos.to_physical_precise_round(self.scale);
                     // Tile renders at tile_pos; wrap elements to shrink them around that anchor.
@@ -324,6 +334,168 @@ impl<W: LayoutElement> CanvasSpace<W> {
                 }
             }
         }
+    }
+
+    pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
+        if self.interactive_resize.is_some() {
+            return false;
+        }
+
+        let Some(tile) = self.tiles.iter_mut().find(|t| t.window().id() == &window) else {
+            return false;
+        };
+
+        let original_window_size = tile.window_size();
+
+        self.interactive_resize = Some(InteractiveResize {
+            window,
+            original_window_size,
+            data: InteractiveResizeData { edges },
+        });
+
+        // Stop camera animations so the tile doesn't slide out from under the cursor.
+        self.view_offset_x = AxisCamera::Static(self.view_offset_x.current());
+        self.view_offset_y = AxisCamera::Static(self.view_offset_y.current());
+
+        true
+    }
+
+    pub fn interactive_resize_update(
+        &mut self,
+        window: &W::Id,
+        delta: Point<f64, Logical>,
+    ) -> bool {
+        let Some(resize) = &self.interactive_resize else {
+            return false;
+        };
+        if window != &resize.window {
+            return false;
+        }
+
+        let original = resize.original_window_size;
+        let edges = resize.data.edges;
+
+        if edges.intersects(ResizeEdge::LEFT_RIGHT) {
+            let mut dx = delta.x;
+            if edges.contains(ResizeEdge::LEFT) {
+                dx = -dx;
+            }
+            let win_width = (original.w + dx).round() as i32;
+            self.set_window_width(Some(window), SizeChange::SetFixed(win_width), false);
+        }
+
+        if edges.intersects(ResizeEdge::TOP_BOTTOM) {
+            let mut dy = delta.y;
+            if edges.contains(ResizeEdge::TOP) {
+                dy = -dy;
+            }
+            let win_height = (original.h + dy).round() as i32;
+            self.set_window_height(Some(window), SizeChange::SetFixed(win_height), false);
+        }
+
+        true
+    }
+
+    pub fn interactive_resize_end(&mut self, window: Option<&W::Id>) {
+        let Some(resize) = &self.interactive_resize else {
+            return;
+        };
+        if let Some(window) = window {
+            if window != &resize.window {
+                return;
+            }
+        }
+        self.interactive_resize = None;
+    }
+
+    /// Set the window width for the identified tile. Mirrors `FloatingSpace::set_window_width`:
+    /// canvas tiles are laid out independently, so there's no column-width distribution to do.
+    pub fn set_window_width(&mut self, id: Option<&W::Id>, change: SizeChange, animate: bool) {
+        let Some(id) = id.or(self.active_id.as_ref()) else {
+            return;
+        };
+        let Some(tile) = self.tiles.iter_mut().find(|t| t.window().id() == id) else {
+            return;
+        };
+
+        let available_size = self.working_area.size.w;
+        let win = tile.window();
+        let current_window = win.expected_size().unwrap_or_else(|| win.size()).w;
+        let current_tile = tile.tile_expected_or_current_size().w;
+
+        const MAX_PX: f64 = 100000.;
+        const MAX_F: f64 = 10000.;
+
+        let win_width = match change {
+            SizeChange::SetFixed(w) => f64::from(w),
+            SizeChange::SetProportion(prop) => {
+                let prop = (prop / 100.).clamp(0., MAX_F);
+                let tile_width = available_size * prop;
+                tile.window_width_for_tile_width(tile_width)
+            }
+            SizeChange::AdjustFixed(delta) => f64::from(current_window.saturating_add(delta)),
+            SizeChange::AdjustProportion(delta) => {
+                let current_prop = current_tile / available_size;
+                let prop = (current_prop + delta / 100.).clamp(0., MAX_F);
+                let tile_width = available_size * prop;
+                tile.window_width_for_tile_width(tile_width)
+            }
+        };
+        let win_width = win_width.round().clamp(1., MAX_PX) as i32;
+
+        let win = tile.window_mut();
+        let min_size = win.min_size();
+        let max_size = win.max_size();
+
+        let win_width = ensure_min_max_size(win_width, min_size.w, max_size.w);
+        let win_height = win.expected_size().unwrap_or_default().h;
+        let win_height = ensure_min_max_size(win_height, min_size.h, max_size.h);
+
+        win.request_size_once(Size::from((win_width, win_height)), animate);
+    }
+
+    pub fn set_window_height(&mut self, id: Option<&W::Id>, change: SizeChange, animate: bool) {
+        let Some(id) = id.or(self.active_id.as_ref()) else {
+            return;
+        };
+        let Some(tile) = self.tiles.iter_mut().find(|t| t.window().id() == id) else {
+            return;
+        };
+
+        let available_size = self.working_area.size.h;
+        let win = tile.window();
+        let current_window = win.expected_size().unwrap_or_else(|| win.size()).h;
+        let current_tile = tile.tile_expected_or_current_size().h;
+
+        const MAX_PX: f64 = 100000.;
+        const MAX_F: f64 = 10000.;
+
+        let win_height = match change {
+            SizeChange::SetFixed(h) => f64::from(h),
+            SizeChange::SetProportion(prop) => {
+                let prop = (prop / 100.).clamp(0., MAX_F);
+                let tile_height = available_size * prop;
+                tile.window_height_for_tile_height(tile_height)
+            }
+            SizeChange::AdjustFixed(delta) => f64::from(current_window.saturating_add(delta)),
+            SizeChange::AdjustProportion(delta) => {
+                let current_prop = current_tile / available_size;
+                let prop = (current_prop + delta / 100.).clamp(0., MAX_F);
+                let tile_height = available_size * prop;
+                tile.window_height_for_tile_height(tile_height)
+            }
+        };
+        let win_height = win_height.round().clamp(1., MAX_PX) as i32;
+
+        let win = tile.window_mut();
+        let min_size = win.min_size();
+        let max_size = win.max_size();
+
+        let win_height = ensure_min_max_size(win_height, min_size.h, max_size.h);
+        let win_width = win.expected_size().unwrap_or_default().w;
+        let win_width = ensure_min_max_size(win_width, min_size.w, max_size.w);
+
+        win.request_size_once(Size::from((win_width, win_height)), animate);
     }
 
     /// Start a close animation for a tile still present on this canvas.
@@ -420,10 +592,8 @@ impl<W: LayoutElement> CanvasSpace<W> {
                 // Hit-test in the un-scaled synthetic screen space. Divide the hit point by
                 // fit.scale, hit-test against un-scaled tile rects anchored at
                 // (canvas_pos - fit.view_pos) + render_offset.
-                let point_unscaled = Point::<f64, Logical>::from((
-                    point.x / fit.scale,
-                    point.y / fit.scale,
-                ));
+                let point_unscaled =
+                    Point::<f64, Logical>::from((point.x / fit.scale, point.y / fit.scale));
                 for tile in self.tiles.iter().rev() {
                     let tile_pos = Self::canvas_to_screen_base(tile.canvas_pos(), fit.view_pos)
                         + tile.render_offset();

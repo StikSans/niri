@@ -1932,10 +1932,13 @@ impl<W: LayoutElement> Workspace<W> {
             return;
         }
         let canvas_focus_ring = focus_ring;
-        self.canvas
-            .render(ctx, xray_pos, canvas_focus_ring, overview_fit, &mut |elem| {
-                push(elem.into())
-            });
+        self.canvas.render(
+            ctx,
+            xray_pos,
+            canvas_focus_ring,
+            overview_fit,
+            &mut |elem| push(elem.into()),
+        );
     }
 
     pub fn render_shadow<R: NiriRenderer>(
@@ -2097,9 +2100,14 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn update_window(&mut self, window: &W::Id, serial: Option<Serial>) {
-        if !self.floating.update_window(window, serial) {
-            self.scrolling.update_window(window, serial);
+        if self.floating.update_window(window, serial) {
+            return;
         }
+        if self.canvas.has_window(window) {
+            self.canvas.update_window(window, serial);
+            return;
+        }
+        self.scrolling.update_window(window, serial);
     }
 
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
@@ -2176,7 +2184,10 @@ impl<W: LayoutElement> Workspace<W> {
         pos_within_workspace: Point<f64, Logical>,
     ) -> Point<f64, super::Canvas> {
         let view = self.canvas.view_pos();
-        Point::from((view.x + pos_within_workspace.x, view.y + pos_within_workspace.y))
+        Point::from((
+            view.x + pos_within_workspace.x,
+            view.y + pos_within_workspace.y,
+        ))
     }
 
     pub(super) fn insert_hint_area(
@@ -2246,6 +2257,8 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
         if self.floating.has_window(&window) {
             self.floating.interactive_resize_begin(window, edges)
+        } else if self.canvas.has_window(&window) {
+            self.canvas.interactive_resize_begin(window, edges)
         } else {
             self.scrolling.interactive_resize_begin(window, edges)
         }
@@ -2258,6 +2271,8 @@ impl<W: LayoutElement> Workspace<W> {
     ) -> bool {
         if self.floating.has_window(window) {
             self.floating.interactive_resize_update(window, delta)
+        } else if self.canvas.has_window(window) {
+            self.canvas.interactive_resize_update(window, delta)
         } else {
             self.scrolling.interactive_resize_update(window, delta)
         }
@@ -2267,11 +2282,14 @@ impl<W: LayoutElement> Workspace<W> {
         if let Some(window) = window {
             if self.floating.has_window(window) {
                 self.floating.interactive_resize_end(Some(window));
+            } else if self.canvas.has_window(window) {
+                self.canvas.interactive_resize_end(Some(window));
             } else {
                 self.scrolling.interactive_resize_end(Some(window));
             }
         } else {
             self.floating.interactive_resize_end(None);
+            self.canvas.interactive_resize_end(None);
             self.scrolling.interactive_resize_end(None);
         }
     }

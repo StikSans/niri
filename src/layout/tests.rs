@@ -485,6 +485,7 @@ enum Op {
         #[proptest(strategy = "-500f64..=500f64")]
         dy: f64,
     },
+    ToggleCanvasMode,
     FocusWindowDownOrColumnLeft,
     FocusWindowDownOrColumnRight,
     FocusWindowUpOrColumnLeft,
@@ -1146,6 +1147,7 @@ impl Op {
                 layout.focus_spatial(SpatialDirection::Down);
             }
             Op::PanCamera { dx, dy } => layout.pan_camera(dx, dy),
+            Op::ToggleCanvasMode => layout.toggle_canvas_mode(),
             Op::FocusWindowDownOrColumnLeft => layout.focus_down_or_left(),
             Op::FocusWindowDownOrColumnRight => layout.focus_down_or_right(),
             Op::FocusWindowUpOrColumnLeft => layout.focus_up_or_left(),
@@ -1773,6 +1775,7 @@ fn operations_dont_panic() {
         Op::ConsumeOrExpelWindowRight { id: None },
         Op::MoveWorkspaceToOutput(1),
         Op::ToggleColumnTabbedDisplay,
+        Op::ToggleCanvasMode,
     ];
 
     for third in &every_op {
@@ -1955,6 +1958,7 @@ fn operations_from_starting_state_dont_panic() {
         Op::ConsumeOrExpelWindowLeft { id: None },
         Op::ConsumeOrExpelWindowRight { id: None },
         Op::ToggleColumnTabbedDisplay,
+        Op::ToggleCanvasMode,
     ];
 
     for third in &every_op {

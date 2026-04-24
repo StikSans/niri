@@ -4195,66 +4195,84 @@ impl<W: LayoutElement> Layout<W> {
                 active_monitor_idx,
                 ..
             } => {
-                let (mon, insert_ws, position, offset, zoom) =
-                    if let Some(mon) = monitors.iter_mut().find(|mon| mon.output == move_.output) {
-                        let zoom = mon.overview_zoom();
+                let (mon, insert_ws, position, offset, zoom) = if let Some(mon) =
+                    monitors.iter_mut().find(|mon| mon.output == move_.output)
+                {
+                    let zoom = mon.overview_zoom();
 
-                        let (insert_ws, geo) = mon.insert_position(move_.pointer_pos_within_output);
-                        let (position, offset) = match insert_ws {
-                            InsertWorkspace::Existing(ws_id) => {
-                                let ws_idx = mon
-                                    .workspaces
-                                    .iter_mut()
-                                    .position(|ws| ws.id() == ws_id)
-                                    .unwrap();
+                    let (insert_ws, geo) = mon.insert_position(move_.pointer_pos_within_output);
+                    let (position, offset) = match insert_ws {
+                        InsertWorkspace::Existing(ws_id) => {
+                            let ws_idx = mon
+                                .workspaces
+                                .iter_mut()
+                                .position(|ws| ws.id() == ws_id)
+                                .unwrap();
 
-                                let position = if move_.is_floating {
-                                    InsertPosition::Floating
+                            let position = if move_.is_floating {
+                                InsertPosition::Floating
+                            } else {
+                                let pos_within_workspace =
+                                    (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
+                                let ws = &mut mon.workspaces[ws_idx];
+                                if ws.is_canvas_mode() {
+                                    InsertPosition::Canvas(
+                                        ws.canvas_insert_position(pos_within_workspace),
+                                    )
                                 } else {
-                                    let pos_within_workspace =
-                                        (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
-                                    let ws = &mut mon.workspaces[ws_idx];
-                                    if ws.is_canvas_mode() {
-                                        InsertPosition::Canvas(
-                                            ws.canvas_insert_position(pos_within_workspace),
-                                        )
-                                    } else {
-                                        ws.scrolling_insert_position(pos_within_workspace)
-                                    }
+                                    ws.scrolling_insert_position(pos_within_workspace)
+                                }
+                            };
+
+                            (position, Some(geo.loc))
+                        }
+                        InsertWorkspace::NewAt(ws_idx) => {
+                            let position = if move_.is_floating {
+                                InsertPosition::Floating
+                            } else {
+                                // Mirror the reuse logic below to learn which workspace
+                                // will be targeted, then pick the matching insert position.
+                                let canvas_mode = if mon.options.layout.empty_workspace_above_first
+                                    && ws_idx == 0
+                                {
+                                    mon.workspaces[0].is_canvas_mode()
+                                } else if mon.workspaces.len().saturating_sub(1) <= ws_idx {
+                                    let last = mon.workspaces.len() - 1;
+                                    mon.workspaces[last].is_canvas_mode()
+                                } else {
+                                    mon.options.layout.canvas_mode
                                 };
 
-                                (position, Some(geo.loc))
-                            }
-                            InsertWorkspace::NewAt(_) => {
-                                let position = if move_.is_floating {
-                                    InsertPosition::Floating
+                                if canvas_mode {
+                                    InsertPosition::Canvas(Point::from((0., 0.)))
                                 } else {
                                     InsertPosition::NewColumn(0)
-                                };
+                                }
+                            };
 
-                                (position, None)
-                            }
-                        };
-
-                        (mon, insert_ws, position, offset, zoom)
-                    } else {
-                        let mon = &mut monitors[*active_monitor_idx];
-                        let zoom = mon.overview_zoom();
-                        // No point in trying to use the pointer position on the wrong output.
-                        let ws = &mon.workspaces[0];
-                        let ws_geo = mon.workspaces_render_geo().next().unwrap();
-
-                        let position = if move_.is_floating {
-                            InsertPosition::Floating
-                        } else if ws.is_canvas_mode() {
-                            InsertPosition::Canvas(ws.canvas_insert_position(Point::from((0., 0.))))
-                        } else {
-                            ws.scrolling_insert_position(Point::from((0., 0.)))
-                        };
-
-                        let insert_ws = InsertWorkspace::Existing(ws.id());
-                        (mon, insert_ws, position, Some(ws_geo.loc), zoom)
+                            (position, None)
+                        }
                     };
+
+                    (mon, insert_ws, position, offset, zoom)
+                } else {
+                    let mon = &mut monitors[*active_monitor_idx];
+                    let zoom = mon.overview_zoom();
+                    // No point in trying to use the pointer position on the wrong output.
+                    let ws = &mon.workspaces[0];
+                    let ws_geo = mon.workspaces_render_geo().next().unwrap();
+
+                    let position = if move_.is_floating {
+                        InsertPosition::Floating
+                    } else if ws.is_canvas_mode() {
+                        InsertPosition::Canvas(ws.canvas_insert_position(Point::from((0., 0.))))
+                    } else {
+                        ws.scrolling_insert_position(Point::from((0., 0.)))
+                    };
+
+                    let insert_ws = InsertWorkspace::Existing(ws.id());
+                    (mon, insert_ws, position, Some(ws_geo.loc), zoom)
+                };
 
                 let win_id = move_.tile.window().id().clone();
                 let tile_render_loc = move_.tile_render_location(zoom);

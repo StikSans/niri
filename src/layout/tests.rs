@@ -5490,3 +5490,62 @@ fn canvas_mode_focus_left_right_uses_canvas_spatial() {
     layout.sync_canvas_positions();
     layout.verify_invariants();
 }
+
+#[test]
+fn canvas_mode_drag_drop_to_new_workspace_lands_on_canvas() {
+    // Drop past the bottom of the active workspace triggers InsertWorkspace::NewAt, which reuses
+    // the empty bottom workspace. With global canvas_mode on, that empty bottom inherits
+    // canvas_mode, so the drop must route through the canvas branch — not hard-code
+    // InsertPosition::NewColumn(0) into scrolling.
+    let options = Options {
+        layout: niri_config::Layout {
+            canvas_mode: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut layout = Layout::with_options(Clock::with_time(Duration::ZERO), options);
+    Op::AddOutput(1).apply(&mut layout);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(3),
+    }
+    .apply(&mut layout);
+    layout.refresh(true);
+
+    // Begin a drag and move the pointer well past the output bottom (720), triggering NewAt(1).
+    // The delta must exceed INTERACTIVE_MOVE_START_THRESHOLD (256px) to reach the Moving state.
+    Op::InteractiveMoveBegin {
+        window: 3,
+        output_idx: 1,
+        px: 100.,
+        py: 50.,
+    }
+    .apply(&mut layout);
+    Op::InteractiveMoveUpdate {
+        window: 3,
+        dx: 400.,
+        dy: 750.,
+        output_idx: 1,
+        px: 500.,
+        py: 800.,
+    }
+    .apply(&mut layout);
+    Op::InteractiveMoveEnd { window: 3 }.apply(&mut layout);
+
+    // The tile must land in a canvas — not be demoted into scrolling.
+    let found_in_canvas = layout
+        .workspaces()
+        .any(|(_, _, ws)| ws.canvas().has_window(&3));
+    let found_in_scrolling = layout
+        .workspaces()
+        .any(|(_, _, ws)| !ws.scrolling().is_empty());
+    assert!(found_in_canvas, "tile must end up on a canvas");
+    assert!(
+        !found_in_scrolling,
+        "tile must not be demoted into scrolling on a canvas-mode drop"
+    );
+
+    layout.sync_canvas_positions();
+    layout.verify_invariants();
+}

@@ -169,6 +169,10 @@ impl<W: LayoutElement> CanvasSpace<W> {
 
     /// Append `tile` to the canvas at `canvas_pos`, activating it.
     pub fn add_tile(&mut self, mut tile: Tile<W>, canvas_pos: Point<f64, Canvas>) {
+        // Reconcile the tile's view/scale/options to this space's, so verify_invariants and
+        // renderer code can trust the Rc identity check. Needed when a tile was built against
+        // a different workspace's options (e.g. cross-workspace DnD).
+        tile.update_config(self.view_size, self.scale, self.options.clone());
         tile.set_canvas_pos(canvas_pos);
         self.active_id = Some(tile.window().id().clone());
         self.tiles.push(tile);

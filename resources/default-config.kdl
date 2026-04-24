@@ -260,6 +260,13 @@ layout {
         // top 64
         // bottom 64
     }
+
+    // Uncomment to make new workspaces use the experimental 2D infinite canvas
+    // instead of the default 1D scrollable tiling. On a canvas, each window has
+    // absolute (x, y) coordinates and the output is a camera that can pan in any
+    // direction. Navigate with focus-spatial-{left,right,up,down} and pan-camera,
+    // and toggle at runtime with toggle-canvas-mode (see binds below).
+    // canvas-mode
 }
 
 // Add lines like this to spawn processes at startup.
@@ -473,6 +480,26 @@ binds {
     Mod+Shift+Page_Up   { move-workspace-up; }
     Mod+Shift+U         { move-workspace-down; }
     Mod+Shift+I         { move-workspace-up; }
+
+    // Canvas mode (experimental): see layout { canvas-mode }.
+    // Toggle the active workspace between the default 1D tiling and the 2D canvas.
+    // Mod+Shift+C repeat=false { toggle-canvas-mode; }
+
+    // Spatial focus: jump to the nearest neighbor in the given direction on the canvas.
+    // Mod+Alt+Left  { focus-spatial-left; }
+    // Mod+Alt+Down  { focus-spatial-down; }
+    // Mod+Alt+Up    { focus-spatial-up; }
+    // Mod+Alt+Right { focus-spatial-right; }
+    // Mod+Alt+H     { focus-spatial-left; }
+    // Mod+Alt+J     { focus-spatial-down; }
+    // Mod+Alt+K     { focus-spatial-up; }
+    // Mod+Alt+L     { focus-spatial-right; }
+
+    // Pan the canvas camera by dx, dy logical pixels (any sign).
+    // Mod+Alt+Shift+H { pan-camera -200.0    0.0; }
+    // Mod+Alt+Shift+L { pan-camera  200.0    0.0; }
+    // Mod+Alt+Shift+K { pan-camera    0.0 -200.0; }
+    // Mod+Alt+Shift+J { pan-camera    0.0  200.0; }
 
     // You can bind mouse wheel scroll ticks using the following syntax.
     // These binds will change direction based on the natural-scroll setting.

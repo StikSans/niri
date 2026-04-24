@@ -10,6 +10,7 @@ layout {
     center-focused-column "never"
     always-center-single-column
     empty-workspace-above-first
+    canvas-mode
     default-column-display "tabbed"
     background-color "#003300"
 
@@ -153,6 +154,28 @@ layout {
     empty-workspace-above-first
 }
 ```
+
+### `canvas-mode`
+
+<sup>Since: fork (niri 2D canvas)</sup>
+
+**Experimental.** Replaces the default 1D scrollable tiling with a 2D infinite canvas on every new workspace. On a canvas, each window has absolute `(x, y)` coordinates rather than a column index, and the output becomes a camera that can pan in any direction over an unbounded 2D plane.
+
+```kdl
+layout {
+    canvas-mode
+}
+```
+
+When a workspace is in canvas mode:
+
+- New windows land at the current camera position and stay where you put them.
+- Focus moves with [spatial focus](./Configuration:-Key-Bindings.md) (`focus-spatial-{left,right,up,down}`) — a "pick the nearest neighbor in this direction" rule rather than "the next column".
+- The camera pans with [`pan-camera`](./Configuration:-Key-Bindings.md) or by dragging a window off-screen. Spring physics from niri's existing animation code power the camera.
+- Drag-to-move drops the window at the cursor in canvas space; interactive resize works per-window without shifting neighbors.
+- Overview zooms out to fit the entire populated canvas (bounding box of all tiles + struts).
+
+Existing 1D workspaces keep working side-by-side: `canvas-mode` only affects workspaces created *after* it is set. To convert the active workspace at runtime, use the [`toggle-canvas-mode`](./Configuration:-Key-Bindings.md) action.
 
 ### `default-column-display`
 

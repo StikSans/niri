@@ -416,3 +416,45 @@ binds {
     Super+Alt+L allow-inhibiting=false { spawn "swaylock"; }
 }
 ```
+
+#### Canvas-mode actions
+
+<sup>Since: fork (niri 2D canvas)</sup>
+
+These actions work with the experimental [2D canvas layout](./Configuration:-Layout.md#canvas-mode). They are no-ops (or fall back to column-based navigation) on a 1D workspace, so it is safe to bind them unconditionally.
+
+##### `toggle-canvas-mode`
+
+Toggle the active workspace between 1D scrollable tiling and the 2D canvas. Converting 1D → canvas lifts every column into canvas tiles laid out at the columns' current screen positions; converting canvas → 1D drops the tiles back into a single column ordered by their canvas `x`.
+
+```kdl
+binds {
+    Mod+Shift+C repeat=false { toggle-canvas-mode; }
+}
+```
+
+##### `focus-spatial-left`, `focus-spatial-right`, `focus-spatial-up`, `focus-spatial-down`
+
+Spatial focus: pick the nearest neighbor in the given direction using a `primary + 2 * |perpendicular|` distance rule in canvas space. Replaces `focus-column-*` / `focus-window-up|down` on a canvas workspace.
+
+```kdl
+binds {
+    Mod+Alt+H { focus-spatial-left; }
+    Mod+Alt+J { focus-spatial-down; }
+    Mod+Alt+K { focus-spatial-up; }
+    Mod+Alt+L { focus-spatial-right; }
+}
+```
+
+##### `pan-camera`
+
+Pan the canvas camera by `dx` and `dy` logical pixels (any sign). Reuses the spring-physics animation that niri already uses for horizontal column scrolling, so repeated pans accumulate smoothly.
+
+```kdl
+binds {
+    Mod+Alt+Shift+H { pan-camera -200.0    0.0; }
+    Mod+Alt+Shift+L { pan-camera  200.0    0.0; }
+    Mod+Alt+Shift+K { pan-camera    0.0 -200.0; }
+    Mod+Alt+Shift+J { pan-camera    0.0  200.0; }
+}
+```

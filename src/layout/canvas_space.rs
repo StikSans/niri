@@ -16,6 +16,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
+use super::floating::DIRECTIONAL_MOVE_PX;
 use super::scrolling::SpatialDirection;
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::InteractiveResize;
@@ -853,6 +854,44 @@ impl<W: LayoutElement> CanvasSpace<W> {
         } else if canvas.y + size.h > view_bottom {
             self.animate_view_pos_y(canvas.y + size.h - self.view_size.h);
         }
+    }
+
+    // --- directional move ---
+
+    /// Nudge the active tile by `amount` in canvas space. Returns false if there is no active
+    /// tile. Brings the tile into view afterward and cancels any in-flight resize gesture, since
+    /// the captured original geometry no longer applies.
+    pub fn move_active_by(&mut self, amount: Point<f64, Canvas>) -> bool {
+        let Some(id) = self.active_id.clone() else {
+            return false;
+        };
+        let Some(tile) = self.tiles.iter_mut().find(|t| t.window().id() == &id) else {
+            return false;
+        };
+        let current = tile.canvas_pos();
+        tile.set_canvas_pos(Point::<f64, Canvas>::from((
+            current.x + amount.x,
+            current.y + amount.y,
+        )));
+        self.interactive_resize = None;
+        self.bring_active_tile_into_view();
+        true
+    }
+
+    pub fn move_active_left(&mut self) -> bool {
+        self.move_active_by(Point::from((-DIRECTIONAL_MOVE_PX, 0.)))
+    }
+
+    pub fn move_active_right(&mut self) -> bool {
+        self.move_active_by(Point::from((DIRECTIONAL_MOVE_PX, 0.)))
+    }
+
+    pub fn move_active_up(&mut self) -> bool {
+        self.move_active_by(Point::from((0., -DIRECTIONAL_MOVE_PX)))
+    }
+
+    pub fn move_active_down(&mut self) -> bool {
+        self.move_active_by(Point::from((0., DIRECTIONAL_MOVE_PX)))
     }
 
     // --- spatial focus ---

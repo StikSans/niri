@@ -5399,3 +5399,94 @@ fn canvas_mode_interactive_resize_routes_to_canvas() {
     layout.sync_canvas_positions();
     layout.verify_invariants();
 }
+
+#[test]
+fn canvas_mode_directional_move_nudges_canvas_tile() {
+    // move_left/right/up/down on a canvas workspace nudge the active canvas tile in canvas
+    // space, not the (empty) scrolling space. Each call moves by DIRECTIONAL_MOVE_PX.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(11),
+    }
+    .apply(&mut layout);
+    layout.refresh(true);
+
+    let start = Point::<f64, super::Canvas>::from((100.0, 100.0));
+    {
+        let ws = layout.active_workspace_mut().unwrap();
+        assert!(ws.canvas_mut().move_tile_to(&11, start));
+    }
+
+    assert!(layout.active_workspace_mut().unwrap().move_right());
+    assert!(layout.active_workspace_mut().unwrap().move_down());
+
+    let nudge = super::floating::DIRECTIONAL_MOVE_PX;
+    {
+        let ws = layout.active_workspace().unwrap();
+        let (_, pos) = ws.canvas().tiles_with_canvas_positions().next().unwrap();
+        assert!((pos.x - (start.x + nudge)).abs() < 1e-6);
+        assert!((pos.y - (start.y + nudge)).abs() < 1e-6);
+    }
+
+    assert!(layout.active_workspace_mut().unwrap().move_left());
+    assert!(layout.active_workspace_mut().unwrap().move_up());
+
+    {
+        let ws = layout.active_workspace().unwrap();
+        let (_, pos) = ws.canvas().tiles_with_canvas_positions().next().unwrap();
+        assert!((pos.x - start.x).abs() < 1e-6);
+        assert!((pos.y - start.y).abs() < 1e-6);
+    }
+
+    layout.sync_canvas_positions();
+    layout.verify_invariants();
+}
+
+#[test]
+fn canvas_mode_focus_left_right_uses_canvas_spatial() {
+    // focus_left/right on a canvas workspace select among canvas tiles by 2D proximity, not
+    // among (empty) scrolling columns.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(1),
+    }
+    .apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(2),
+    }
+    .apply(&mut layout);
+    layout.refresh(true);
+
+    {
+        let ws = layout.active_workspace_mut().unwrap();
+        assert!(ws.canvas_mut().move_tile_to(&1, Point::from((0.0, 100.0))));
+        assert!(ws
+            .canvas_mut()
+            .move_tile_to(&2, Point::from((400.0, 100.0))));
+        assert!(ws.canvas_mut().activate_window(&1));
+    }
+
+    assert!(layout.active_workspace_mut().unwrap().focus_right());
+    {
+        let ws = layout.active_workspace().unwrap();
+        assert_eq!(*ws.canvas().active_window_id().unwrap(), 2);
+    }
+
+    assert!(layout.active_workspace_mut().unwrap().focus_left());
+    {
+        let ws = layout.active_workspace().unwrap();
+        assert_eq!(*ws.canvas().active_window_id().unwrap(), 1);
+    }
+
+    // No candidate to the left of the leftmost tile: focus_left returns false.
+    assert!(!layout.active_workspace_mut().unwrap().focus_left());
+
+    layout.sync_canvas_positions();
+    layout.verify_invariants();
+}

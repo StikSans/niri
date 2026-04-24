@@ -1037,6 +1037,8 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn focus_left(&mut self) -> bool {
         if self.floating_is_active.get() {
             self.floating.focus_left()
+        } else if self.canvas_mode {
+            self.canvas.focus_spatial(SpatialDirection::Left)
         } else {
             self.scrolling.focus_left()
         }
@@ -1045,6 +1047,8 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn focus_right(&mut self) -> bool {
         if self.floating_is_active.get() {
             self.floating.focus_right()
+        } else if self.canvas_mode {
+            self.canvas.focus_spatial(SpatialDirection::Right)
         } else {
             self.scrolling.focus_right()
         }
@@ -1095,6 +1099,8 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn focus_down(&mut self) -> bool {
         if self.floating_is_active.get() {
             self.floating.focus_down()
+        } else if self.canvas_mode {
+            self.canvas.focus_spatial(SpatialDirection::Down)
         } else {
             self.scrolling.focus_down()
         }
@@ -1103,6 +1109,8 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn focus_up(&mut self) -> bool {
         if self.floating_is_active.get() {
             self.floating.focus_up()
+        } else if self.canvas_mode {
+            self.canvas.focus_spatial(SpatialDirection::Up)
         } else {
             self.scrolling.focus_up()
         }
@@ -1286,6 +1294,8 @@ impl<W: LayoutElement> Workspace<W> {
         if self.floating_is_active.get() {
             self.floating.move_left();
             true
+        } else if self.canvas_mode && self.canvas.active_window_id().is_some() {
+            self.canvas.move_active_left()
         } else {
             self.scrolling.move_left()
         }
@@ -1295,6 +1305,8 @@ impl<W: LayoutElement> Workspace<W> {
         if self.floating_is_active.get() {
             self.floating.move_right();
             true
+        } else if self.canvas_mode && self.canvas.active_window_id().is_some() {
+            self.canvas.move_active_right()
         } else {
             self.scrolling.move_right()
         }
@@ -1325,6 +1337,8 @@ impl<W: LayoutElement> Workspace<W> {
         if self.floating_is_active.get() {
             self.floating.move_down();
             true
+        } else if self.canvas_mode && self.canvas.active_window_id().is_some() {
+            self.canvas.move_active_down()
         } else {
             self.scrolling.move_down()
         }
@@ -1334,6 +1348,8 @@ impl<W: LayoutElement> Workspace<W> {
         if self.floating_is_active.get() {
             self.floating.move_up();
             true
+        } else if self.canvas_mode && self.canvas.active_window_id().is_some() {
+            self.canvas.move_active_up()
         } else {
             self.scrolling.move_up()
         }

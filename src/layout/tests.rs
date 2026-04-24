@@ -4543,6 +4543,33 @@ mod canvas_space_tests {
         space.add_tile(t, Point::from((0., 0.)));
         space.verify_invariants();
     }
+
+    #[test]
+    fn visible_tiles_culls_offscreen_and_keeps_onscreen() {
+        let mut space = make_space();
+        // Onscreen: at origin with default camera (view_pos = (0, 0)).
+        let on = make_tile(&space, 1);
+        space.add_tile(on, Point::from((100., 100.)));
+        // Offscreen far to the right and well below the view.
+        let off = make_tile(&space, 2);
+        space.add_tile(off, Point::from((100_000., 100_000.)));
+
+        let total = space.tiles_with_render_positions().count();
+        let visible: Vec<_> = space
+            .visible_tiles_with_render_positions()
+            .map(|(t, _)| *t.window().id())
+            .collect();
+        assert_eq!(total, 2);
+        assert_eq!(visible, vec![1]);
+
+        // Pan camera over the second tile — it should become visible, the first should vanish.
+        space.set_view_pos(Point::from((100_000., 100_000.)));
+        let visible: Vec<_> = space
+            .visible_tiles_with_render_positions()
+            .map(|(t, _)| *t.window().id())
+            .collect();
+        assert_eq!(visible, vec![2]);
+    }
 }
 
 #[test]

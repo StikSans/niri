@@ -306,7 +306,7 @@ impl<W: LayoutElement> CanvasSpace<W> {
         let active = self.active_id.clone();
         match overview {
             None => {
-                for (tile, tile_pos) in self.tiles_with_render_positions() {
+                for (tile, tile_pos) in self.visible_tiles_with_render_positions() {
                     let focus_ring = focus_ring && Some(tile.window().id()) == active.as_ref();
                     let xray_pos = xray_pos.offset(tile_pos);
                     tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
@@ -725,6 +725,35 @@ impl<W: LayoutElement> CanvasSpace<W> {
                 Self::canvas_to_screen_base(tile.canvas_pos(), view_pos) + tile.render_offset();
             let pos = pos.to_physical_precise_round(scale).to_logical(scale);
             (tile, pos)
+        })
+    }
+
+    /// Iterate over tiles that intersect the view rect (camera + view_size), with their rounded
+    /// screen-space positions. Used by the non-overview render path so off-screen canvas tiles
+    /// don't consume render-element work on large canvases. Overview rendering always processes
+    /// every tile because the fit transform may make the entire canvas visible.
+    pub fn visible_tiles_with_render_positions(
+        &self,
+    ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> + '_ {
+        let view_pos = self.view_pos();
+        let view_size = self.view_size;
+        let scale = self.scale;
+        self.tiles.iter().filter_map(move |tile| {
+            let screen =
+                Self::canvas_to_screen_base(tile.canvas_pos(), view_pos) + tile.render_offset();
+            let size = tile.tile_size();
+            // AABB intersection with the view rect at origin. Tiles sharing an edge with the view
+            // (e.g. tile_right == 0) are treated as off-screen so we don't pay for their render
+            // elements. Overlap by even a sub-pixel keeps the tile alive.
+            if screen.x + size.w <= 0.0
+                || screen.y + size.h <= 0.0
+                || screen.x >= view_size.w
+                || screen.y >= view_size.h
+            {
+                return None;
+            }
+            let pos = screen.to_physical_precise_round(scale).to_logical(scale);
+            Some((tile, pos))
         })
     }
 

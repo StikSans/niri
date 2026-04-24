@@ -1925,6 +1925,7 @@ impl<W: LayoutElement> Workspace<W> {
         ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         focus_ring: bool,
+        overview_fit: Option<super::canvas_space::OverviewFit>,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
     ) {
         if !self.canvas_mode {
@@ -1932,7 +1933,7 @@ impl<W: LayoutElement> Workspace<W> {
         }
         let canvas_focus_ring = focus_ring;
         self.canvas
-            .render(ctx, xray_pos, canvas_focus_ring, &mut |elem| {
+            .render(ctx, xray_pos, canvas_focus_ring, overview_fit, &mut |elem| {
                 push(elem.into())
             });
     }
@@ -2051,7 +2052,7 @@ impl<W: LayoutElement> Workspace<W> {
         // canvas_mode is on. When off, canvas tiles are invisible (see render_canvas) and
         // must not be hit-testable either.
         if self.canvas_mode {
-            if let Some(rv) = self.canvas.window_under(pos) {
+            if let Some(rv) = self.canvas.window_under(pos, None) {
                 return Some(rv);
             }
         }
@@ -2322,6 +2323,28 @@ impl<W: LayoutElement> Workspace<W> {
     #[cfg(test)]
     pub fn canvas_mut(&mut self) -> &mut CanvasSpace<W> {
         &mut self.canvas
+    }
+
+    /// Overview-fit transform for this workspace, or `None` if the canvas has no content or
+    /// canvas_mode is off.
+    pub(super) fn canvas_overview_fit(&self) -> Option<super::canvas_space::OverviewFit> {
+        if !self.canvas_mode {
+            return None;
+        }
+        self.canvas.overview_fit()
+    }
+
+    /// Hit-test the canvas using the given overview-fit transform. Only used by monitor-level
+    /// overview hit-testing; returns `None` when canvas_mode is off or there's no match.
+    pub(super) fn canvas_window_under_with_fit(
+        &self,
+        pos: Point<f64, Logical>,
+        fit: super::canvas_space::OverviewFit,
+    ) -> Option<(&W, HitType)> {
+        if !self.canvas_mode {
+            return None;
+        }
+        self.canvas.window_under(pos, Some(fit))
     }
 
     #[cfg(test)]

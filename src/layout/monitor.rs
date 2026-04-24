@@ -1604,6 +1604,17 @@ impl<W: LayoutElement> Monitor<W> {
         if self.overview_progress.is_some() {
             let zoom = self.overview_zoom();
             let pos_within_workspace = (pos_within_output - geo.loc).downscale(zoom);
+
+            // Canvas workspaces use an overview-fit transform so the whole populated canvas is
+            // visible. When a fit is active, hit-test exclusively against it — falling back to
+            // the default workspace path would re-hit canvas tiles at their un-fit positions,
+            // which don't match what's on screen in overview.
+            if let Some(fit) = ws.canvas_overview_fit() {
+                let (win, hit) =
+                    ws.canvas_window_under_with_fit(pos_within_workspace, fit)?;
+                return Some((win, hit.to_activate()));
+            }
+
             let (win, hit) = ws.window_under(pos_within_workspace)?;
             // During the overview animation, we cannot do input hits because we cannot really
             // represent scaled windows properly.
@@ -1786,7 +1797,14 @@ impl<W: LayoutElement> Monitor<W> {
 
             ws.render_scrolling(ctx.r(), xray_pos, focus_ring, push!());
 
-            ws.render_canvas(ctx.r(), xray_pos, focus_ring, push!());
+            // Canvas overview-fit: only when the overview is actually open, so the normal
+            // (camera-viewport) render is used outside of overview.
+            let canvas_overview_fit = if self.overview_progress.is_some() {
+                ws.canvas_overview_fit()
+            } else {
+                None
+            };
+            ws.render_canvas(ctx.r(), xray_pos, focus_ring, canvas_overview_fit, push!());
         }
     }
 

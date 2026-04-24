@@ -8,6 +8,9 @@
 
 use std::rc::Rc;
 
+use smithay::backend::renderer::element::utils::{
+    Relocate, RelocateRenderElement, RescaleRenderElement,
+};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 
@@ -25,8 +28,21 @@ use crate::utils::transaction::TransactionBlocker;
 niri_render_elements! {
     CanvasSpaceRenderElement<R> => {
         Tile = TileRenderElement<R>,
+        TileScaled = RelocateRenderElement<RescaleRenderElement<TileRenderElement<R>>>,
         ClosingWindow = ClosingWindowRenderElement,
     }
+}
+
+/// Per-render/hit-test override that replaces the canvas camera with a synthetic view that fits
+/// the populated content bounding box into the workspace view rect.
+///
+/// Used only for overview rendering and hit-testing. Does not mutate [`CanvasSpace`] state.
+#[derive(Debug, Clone, Copy)]
+pub struct OverviewFit {
+    /// Synthetic camera position. `canvas_pos - view_pos` gives the un-scaled screen offset.
+    pub view_pos: Point<f64, Canvas>,
+    /// Scale factor applied to tile positions and visuals so the content bbox fits into the view.
+    pub scale: f64,
 }
 
 /// A 2D canvas populated by free-placement tiles.
@@ -243,11 +259,15 @@ impl<W: LayoutElement> CanvasSpace<W> {
     ///
     /// Mirrors the shape of [`FloatingSpace::render`] / [`ScrollingSpace::render`]: the caller
     /// supplies a push callback that receives a [`CanvasSpaceRenderElement`] per element.
+    ///
+    /// When `overview` is `Some`, the canvas renders via a synthetic view — see
+    /// [`OverviewFit`]. This is used to fit the populated content into an overview thumbnail.
     pub fn render<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         focus_ring: bool,
+        overview: Option<OverviewFit>,
         push: &mut dyn FnMut(CanvasSpaceRenderElement<R>),
     ) {
         let scale = Scale::from(self.scale);
@@ -256,19 +276,53 @@ impl<W: LayoutElement> CanvasSpace<W> {
         // occluded by unrelated canvas tiles that happen to be in front in insertion order.
         // The view_rect for canvas is always anchored at (0, 0) in screen-space — the camera
         // offset is baked into ClosingWindow::pos when the animation starts.
-        let view_rect = Rectangle::from_size(self.view_size);
-        for closing in self.closing_windows.iter().rev() {
-            let elem = closing.render(ctx.as_gles(), view_rect, scale);
-            push(elem.into());
+        //
+        // Skip in overview fit mode: closing windows have baked-in screen positions that don't
+        // respect the overview override and would render at the wrong place. Overview is a
+        // short-lived view so this is a non-issue in practice.
+        if overview.is_none() {
+            let view_rect = Rectangle::from_size(self.view_size);
+            for closing in self.closing_windows.iter().rev() {
+                let elem = closing.render(ctx.as_gles(), view_rect, scale);
+                push(elem.into());
+            }
         }
 
         let active = self.active_id.clone();
-        for (tile, tile_pos) in self.tiles_with_render_positions() {
-            let focus_ring = focus_ring && Some(tile.window().id()) == active.as_ref();
-            let xray_pos = xray_pos.offset(tile_pos);
-            tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
-                push(elem.into())
-            });
+        match overview {
+            None => {
+                for (tile, tile_pos) in self.tiles_with_render_positions() {
+                    let focus_ring = focus_ring && Some(tile.window().id()) == active.as_ref();
+                    let xray_pos = xray_pos.offset(tile_pos);
+                    tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
+                        push(elem.into())
+                    });
+                }
+            }
+            Some(fit) => {
+                for tile in &self.tiles {
+                    let focus_ring = focus_ring && Some(tile.window().id()) == active.as_ref();
+                    let base = Self::canvas_to_screen_base(tile.canvas_pos(), fit.view_pos)
+                        + tile.render_offset();
+                    let tile_pos = Point::<f64, Logical>::from((
+                        base.x * fit.scale,
+                        base.y * fit.scale,
+                    ));
+                    let tile_pos = tile_pos.to_physical_precise_round(self.scale).to_logical(self.scale);
+                    let xray_pos = xray_pos.offset(tile_pos);
+                    let anchor = tile_pos.to_physical_precise_round(self.scale);
+                    // Tile renders at tile_pos; wrap elements to shrink them around that anchor.
+                    tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
+                        let elem = RescaleRenderElement::from_element(elem, anchor, fit.scale);
+                        let elem = RelocateRenderElement::from_element(
+                            elem,
+                            Point::default(),
+                            Relocate::Relative,
+                        );
+                        push(elem.into());
+                    });
+                }
+            }
         }
     }
 
@@ -340,19 +394,108 @@ impl<W: LayoutElement> CanvasSpace<W> {
     ///
     /// Iterates tiles in reverse insertion order so later-added tiles are tried first (stands in
     /// for proper z-order in this phase).
-    pub fn window_under(&self, point: Point<f64, Logical>) -> Option<(&W, HitType)> {
-        let view_pos = self.view_pos();
+    ///
+    /// When `overview` is `Some`, the same fit transform used in [`render`] is applied: tile
+    /// positions are scaled and the hit box matches the visually rendered rect.
+    pub fn window_under(
+        &self,
+        point: Point<f64, Logical>,
+        overview: Option<OverviewFit>,
+    ) -> Option<(&W, HitType)> {
         let scale = self.scale;
-        for tile in self.tiles.iter().rev() {
-            let tile_pos =
-                Self::canvas_to_screen_base(tile.canvas_pos(), view_pos) + tile.render_offset();
-            let tile_pos = tile_pos.to_physical_precise_round(scale).to_logical(scale);
+        match overview {
+            None => {
+                let view_pos = self.view_pos();
+                for tile in self.tiles.iter().rev() {
+                    let tile_pos = Self::canvas_to_screen_base(tile.canvas_pos(), view_pos)
+                        + tile.render_offset();
+                    let tile_pos = tile_pos.to_physical_precise_round(scale).to_logical(scale);
 
-            if let Some(rv) = HitType::hit_tile(tile, tile_pos, point) {
-                return Some(rv);
+                    if let Some(rv) = HitType::hit_tile(tile, tile_pos, point) {
+                        return Some(rv);
+                    }
+                }
+            }
+            Some(fit) => {
+                // Hit-test in the un-scaled synthetic screen space. Divide the hit point by
+                // fit.scale, hit-test against un-scaled tile rects anchored at
+                // (canvas_pos - fit.view_pos) + render_offset.
+                let point_unscaled = Point::<f64, Logical>::from((
+                    point.x / fit.scale,
+                    point.y / fit.scale,
+                ));
+                for tile in self.tiles.iter().rev() {
+                    let tile_pos = Self::canvas_to_screen_base(tile.canvas_pos(), fit.view_pos)
+                        + tile.render_offset();
+                    if let Some(rv) = HitType::hit_tile(tile, tile_pos, point_unscaled) {
+                        return Some(rv);
+                    }
+                }
             }
         }
         None
+    }
+
+    /// Compute the canvas-space bounding box of all tiles. Returns `None` if empty.
+    pub fn content_bounds(&self) -> Option<Rectangle<f64, Canvas>> {
+        let mut iter = self.tiles.iter();
+        let first = iter.next()?;
+        let first_pos = first.canvas_pos();
+        let first_size = first.tile_size();
+        let mut min_x = first_pos.x;
+        let mut min_y = first_pos.y;
+        let mut max_x = first_pos.x + first_size.w;
+        let mut max_y = first_pos.y + first_size.h;
+        for tile in iter {
+            let pos = tile.canvas_pos();
+            let size = tile.tile_size();
+            if pos.x < min_x {
+                min_x = pos.x;
+            }
+            if pos.y < min_y {
+                min_y = pos.y;
+            }
+            if pos.x + size.w > max_x {
+                max_x = pos.x + size.w;
+            }
+            if pos.y + size.h > max_y {
+                max_y = pos.y + size.h;
+            }
+        }
+        Some(Rectangle::new(
+            Point::<f64, Canvas>::from((min_x, min_y)),
+            Size::<f64, Canvas>::from((max_x - min_x, max_y - min_y)),
+        ))
+    }
+
+    /// Compute the overview-fit transform that centers the populated content in `view_size`.
+    ///
+    /// Returns `None` when the canvas is empty, when `view_size` is degenerate, or when the
+    /// content already fits at scale 1 (no fit needed). The caller may still use `Some(fit)` with
+    /// `scale == 1.0` when extra padding centering is desired; the threshold here is a modest
+    /// margin beyond the raw bbox.
+    pub fn overview_fit(&self) -> Option<OverviewFit> {
+        let bbox = self.content_bounds()?;
+        if !(self.view_size.w > 0. && self.view_size.h > 0.) {
+            return None;
+        }
+
+        // Padding in logical pixels so tiles don't render flush with the workspace edge.
+        let padding: f64 = 32.;
+        let padded_w = (bbox.size.w + padding * 2.).max(1e-3);
+        let padded_h = (bbox.size.h + padding * 2.).max(1e-3);
+
+        let fit_x = self.view_size.w / padded_w;
+        let fit_y = self.view_size.h / padded_h;
+        let scale = fit_x.min(fit_y).clamp(1e-3, 1.0);
+
+        let bbox_center_x = bbox.loc.x + bbox.size.w / 2.;
+        let bbox_center_y = bbox.loc.y + bbox.size.h / 2.;
+        let view_pos = Point::<f64, Canvas>::from((
+            bbox_center_x - self.view_size.w / (2. * scale),
+            bbox_center_y - self.view_size.h / (2. * scale),
+        ));
+        Some(OverviewFit { view_pos, scale })
     }
 
     /// Debug-mode invariants for `Layout::verify_invariants`.

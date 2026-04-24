@@ -4508,13 +4508,13 @@ mod canvas_space_tests {
         space.update_render_elements(true);
 
         // Logical point inside the tile's on-screen rect (camera at 0,0, so tile at (50,50)).
-        let hit = space.window_under(Point::from((60., 60.)));
+        let hit = space.window_under(Point::from((60., 60.)), None);
         assert!(hit.is_some(), "expected a hit inside the tile");
         let (w, _) = hit.unwrap();
         assert_eq!(*w.id(), 42);
 
         // Point far outside.
-        assert!(space.window_under(Point::from((2000., 2000.))).is_none());
+        assert!(space.window_under(Point::from((2000., 2000.)), None).is_none());
     }
 
     #[test]
@@ -4525,12 +4525,12 @@ mod canvas_space_tests {
         space.update_render_elements(true);
 
         // Without panning, (60, 60) is outside the tile.
-        assert!(space.window_under(Point::from((60., 60.))).is_none());
+        assert!(space.window_under(Point::from((60., 60.)), None).is_none());
 
         // Pan camera so the tile's top-left sits near (20, 20) on screen.
         space.set_view_pos(Point::from((380., 280.)));
         space.update_render_elements(true);
-        assert!(space.window_under(Point::from((30., 30.))).is_some());
+        assert!(space.window_under(Point::from((30., 30.)), None).is_some());
     }
 
     #[test]
@@ -4993,9 +4993,9 @@ fn canvas_mode_toggle_overview_preserves_state() {
 
 #[test]
 fn canvas_mode_overview_hit_tests_canvas_tile() {
-    // In overview, Monitor::window_under downscales the pointer by the overview zoom before
-    // calling workspace.window_under. A canvas tile must still be hittable at its downscaled
-    // on-screen position.
+    // In overview, Monitor::window_under downscales the pointer by the overview zoom, then the
+    // canvas applies its own fit transform (see Phase 2d-13) to fit the populated content into
+    // the workspace view rect. The tile must be hittable at its fit-transformed center.
     let mut layout = Layout::default();
     Op::AddOutput(1).apply(&mut layout);
     layout.active_workspace_mut().unwrap().set_canvas_mode(true);
@@ -5006,23 +5006,23 @@ fn canvas_mode_overview_hit_tests_canvas_tile() {
     .apply(&mut layout);
     layout.refresh(true);
 
-    // Find the output and the tile's workspace-local render position / size.
     let output = layout
         .outputs()
         .find(|o| o.name() == "output1")
         .cloned()
         .unwrap();
 
-    let (tile_local_pos, tile_size) = {
-        let ws = layout.active_workspace().unwrap();
-        let (tile, pos) = ws.canvas().tiles_with_render_positions().next().unwrap();
-        (pos, tile.tile_size())
-    };
-
     // Open overview fully.
     Op::ToggleOverview.apply(&mut layout);
     Op::CompleteAnimations.apply(&mut layout);
     layout.verify_invariants();
+
+    // Tile canvas_pos + size before fit, captured under overview so the fit source is stable.
+    let (canvas_pos, tile_size) = {
+        let ws = layout.active_workspace().unwrap();
+        let (tile, pos) = ws.canvas().tiles_with_canvas_positions().next().unwrap();
+        (pos, tile.tile_size())
+    };
 
     let mon = layout.monitor_for_output(&output).unwrap();
     let zoom = mon.overview_zoom();
@@ -5032,20 +5032,197 @@ fn canvas_mode_overview_hit_tests_canvas_tile() {
         .map(|(_, geo)| geo)
         .unwrap();
 
-    // Center of the tile in overview screen coords.
-    let tile_center_local = Point::<f64, Logical>::from((
-        tile_local_pos.x + tile_size.w as f64 / 2.,
-        tile_local_pos.y + tile_size.h as f64 / 2.,
-    ));
+    let fit = layout
+        .active_workspace()
+        .unwrap()
+        .canvas()
+        .overview_fit()
+        .expect("overview fit is active for populated canvas");
+
+    // Fit-transformed tile center in workspace-local logical coordinates.
+    let tile_pos_unscaled_x = canvas_pos.x - fit.view_pos.x;
+    let tile_pos_unscaled_y = canvas_pos.y - fit.view_pos.y;
+    let tile_center_local_x = (tile_pos_unscaled_x + tile_size.w / 2.) * fit.scale;
+    let tile_center_local_y = (tile_pos_unscaled_y + tile_size.h / 2.) * fit.scale;
+
     let overview_hit = Point::<f64, Logical>::from((
-        ws_geo.loc.x + tile_center_local.x * zoom,
-        ws_geo.loc.y + tile_center_local.y * zoom,
+        ws_geo.loc.x + tile_center_local_x * zoom,
+        ws_geo.loc.y + tile_center_local_y * zoom,
     ));
 
     let (win, _) = layout
         .window_under(&output, overview_hit)
         .expect("canvas tile must be hit-testable in overview");
     assert_eq!(*win.id(), 8);
+}
+
+#[test]
+fn canvas_content_bounds_and_overview_fit() {
+    // Unit-level check: bbox and fit are derived from canvas_pos + tile sizes.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    // Empty canvas: no bounds, no fit.
+    assert!(layout.active_workspace().unwrap().canvas().content_bounds().is_none());
+    assert!(layout.active_workspace().unwrap().canvas().overview_fit().is_none());
+
+    // One small tile — bbox has the tile's size, fit scale is 1.0 (the tile fits view_size).
+    Op::AddWindow {
+        params: TestWindowParams::new(1),
+    }
+    .apply(&mut layout);
+    layout.refresh(true);
+    {
+        let ws = layout.active_workspace_mut().unwrap();
+        // Put the tile at a known position so arithmetic is straightforward.
+        assert!(ws.canvas_mut().move_tile_to(&1, Point::from((0., 0.))));
+    }
+
+    let (tile_w, tile_h) = {
+        let ws = layout.active_workspace().unwrap();
+        let (tile, _) = ws.canvas().tiles_with_canvas_positions().next().unwrap();
+        let size = tile.tile_size();
+        (size.w, size.h)
+    };
+
+    let bbox = layout
+        .active_workspace()
+        .unwrap()
+        .canvas()
+        .content_bounds()
+        .unwrap();
+    assert!((bbox.loc.x - 0.0).abs() < 1e-6);
+    assert!((bbox.loc.y - 0.0).abs() < 1e-6);
+    assert!((bbox.size.w - tile_w).abs() < 1e-6);
+    assert!((bbox.size.h - tile_h).abs() < 1e-6);
+
+    let fit = layout.active_workspace().unwrap().canvas().overview_fit().unwrap();
+    // For a small bbox the fit caps at 1.0.
+    assert!((fit.scale - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn canvas_overview_fit_scales_down_spread_out_content() {
+    // Spread two tiles far apart on the canvas so the bbox exceeds view_size on at least one
+    // axis. The fit scale must be strictly less than 1, placing both tiles inside view_size.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(1),
+    }
+    .apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(2),
+    }
+    .apply(&mut layout);
+    layout.refresh(true);
+
+    {
+        let ws = layout.active_workspace_mut().unwrap();
+        assert!(ws.canvas_mut().move_tile_to(&1, Point::from((0., 0.))));
+        // Force the bbox beyond the 1280x720 test output.
+        assert!(ws.canvas_mut().move_tile_to(&2, Point::from((2000., 1500.))));
+    }
+
+    let canvas = {
+        let ws = layout.active_workspace().unwrap();
+        ws.canvas()
+    };
+    let fit = canvas.overview_fit().expect("populated canvas has a fit");
+    assert!(fit.scale > 0.0);
+    assert!(fit.scale < 1.0, "scale must shrink to fit; got {}", fit.scale);
+
+    // Both tiles' visual rects must land inside the view_size (1280 x 720) when transformed.
+    for (tile, canvas_pos) in canvas.tiles_with_canvas_positions() {
+        let size = tile.tile_size();
+        let left = (canvas_pos.x - fit.view_pos.x) * fit.scale;
+        let top = (canvas_pos.y - fit.view_pos.y) * fit.scale;
+        let right = left + size.w * fit.scale;
+        let bottom = top + size.h * fit.scale;
+        assert!(left >= -1e-3, "tile {} left escapes view: {left}", tile.window().id());
+        assert!(top >= -1e-3, "tile {} top escapes view: {top}", tile.window().id());
+        assert!(right <= 1280.0 + 1e-3, "tile {} right escapes view: {right}", tile.window().id());
+        assert!(bottom <= 720.0 + 1e-3, "tile {} bottom escapes view: {bottom}", tile.window().id());
+    }
+}
+
+#[test]
+fn canvas_overview_fit_hits_off_camera_tile() {
+    // A tile placed far off the current camera viewport is NOT hit-testable in non-overview
+    // mode, but IS hit-testable in overview thanks to the fit transform that brings all tiles
+    // into view.
+    let mut layout = Layout::default();
+    Op::AddOutput(1).apply(&mut layout);
+    layout.active_workspace_mut().unwrap().set_canvas_mode(true);
+
+    Op::AddWindow {
+        params: TestWindowParams::new(77),
+    }
+    .apply(&mut layout);
+    layout.refresh(true);
+
+    // Push the tile far off the current camera (at 0,0).
+    let far_pos = Point::<f64, super::Canvas>::from((3000., 2500.));
+    {
+        let ws = layout.active_workspace_mut().unwrap();
+        assert!(ws.canvas_mut().move_tile_to(&77, far_pos));
+    }
+    layout.refresh(true);
+
+    let output = layout
+        .outputs()
+        .find(|o| o.name() == "output1")
+        .cloned()
+        .unwrap();
+
+    // Non-overview hit at the center of the output misses: camera is at (0,0), tile is at
+    // (3000, 2500).
+    assert!(
+        layout
+            .window_under(&output, Point::from((640., 360.)))
+            .is_none(),
+        "off-camera tile must not be hit in normal (non-overview) view",
+    );
+
+    // Open overview. The fit transform centers the bbox on view_size (640, 360).
+    Op::ToggleOverview.apply(&mut layout);
+    Op::CompleteAnimations.apply(&mut layout);
+    layout.verify_invariants();
+
+    let fit = layout
+        .active_workspace()
+        .unwrap()
+        .canvas()
+        .overview_fit()
+        .expect("populated canvas has a fit");
+    let (tile_size,) = {
+        let ws = layout.active_workspace().unwrap();
+        let (tile, _) = ws.canvas().tiles_with_canvas_positions().next().unwrap();
+        (tile.tile_size(),)
+    };
+    let mon = layout.monitor_for_output(&output).unwrap();
+    let zoom = mon.overview_zoom();
+    let ws_geo = mon
+        .workspaces_with_render_geo()
+        .next()
+        .map(|(_, geo)| geo)
+        .unwrap();
+
+    // Fit-transformed tile center, then applying the overview workspace zoom + location.
+    let center_local_x = (far_pos.x - fit.view_pos.x + tile_size.w / 2.) * fit.scale;
+    let center_local_y = (far_pos.y - fit.view_pos.y + tile_size.h / 2.) * fit.scale;
+    let overview_hit = Point::<f64, Logical>::from((
+        ws_geo.loc.x + center_local_x * zoom,
+        ws_geo.loc.y + center_local_y * zoom,
+    ));
+
+    let (win, _) = layout
+        .window_under(&output, overview_hit)
+        .expect("off-camera canvas tile is hit-testable in overview");
+    assert_eq!(*win.id(), 77);
 }
 
 #[test]

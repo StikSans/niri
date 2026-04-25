@@ -1238,6 +1238,21 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    /// Drag-to-pan: convert a screen-space pointer delta to a canvas-space camera delta and
+    /// apply it immediately (no animation). The conversion divides by the current camera zoom
+    /// so the canvas point under the cursor stays under the cursor, and negates the delta so
+    /// that moving the cursor right "drags" the canvas right. Returns `true` if a pan was
+    /// applied (i.e., the workspace is in canvas mode).
+    pub fn drag_pan_canvas(&mut self, screen_delta: Point<f64, Logical>) -> bool {
+        if !self.canvas_mode {
+            return false;
+        }
+        let zoom = self.canvas.view_zoom();
+        self.canvas
+            .pan_camera_instant(-screen_delta.x / zoom, -screen_delta.y / zoom);
+        true
+    }
+
     pub fn focus_down_or_left(&mut self) {
         if self.floating_is_active.get() {
             self.floating.focus_down();
@@ -2195,7 +2210,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     /// Is canvas drop-routing active for this workspace?
-    pub(super) fn is_canvas_mode(&self) -> bool {
+    pub fn is_canvas_mode(&self) -> bool {
         self.canvas_mode
     }
 

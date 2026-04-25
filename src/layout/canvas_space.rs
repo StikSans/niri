@@ -925,6 +925,18 @@ impl<W: LayoutElement> CanvasSpace<W> {
         }
     }
 
+    /// Pan the camera by `(dx, dy)` immediately (no animation). Used by interactive drag-to-pan
+    /// grabs where each pointer-motion event must update the view in real time — running each
+    /// step through a spring would feel laggy and "elastic".
+    pub fn pan_camera_instant(&mut self, dx: f64, dy: f64) {
+        if dx == 0. && dy == 0. {
+            return;
+        }
+        let new_x = self.view_offset_x.current() + dx;
+        let new_y = self.view_offset_y.current() + dy;
+        self.set_view_pos(Point::from((new_x, new_y)));
+    }
+
     /// Current camera zoom (live during animation).
     pub fn view_zoom(&self) -> f64 {
         self.view_zoom.current()

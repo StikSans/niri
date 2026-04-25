@@ -57,6 +57,7 @@ use crate::utils::{center, get_monotonic_time, CastSessionId, ResizeEdge};
 
 pub mod backend_ext;
 pub mod move_grab;
+pub mod pan_camera_grab;
 pub mod pick_color_grab;
 pub mod pick_window_grab;
 pub mod resize_grab;
@@ -2896,6 +2897,7 @@ impl State {
 
                     if let Some((output, ws)) = output_ws {
                         let ws_id = ws.id();
+                        let is_canvas = ws.is_canvas_mode();
 
                         self.niri.layout.focus_output(&output);
 
@@ -2905,6 +2907,20 @@ impl State {
                             button: button_code,
                             location,
                         };
+
+                        if is_canvas {
+                            // Canvas mode: drag-to-pan the 2D camera. The 1D
+                            // SpatialMovementGrab below would only pan one axis and may also
+                            // switch workspaces — neither is what users expect on a canvas.
+                            let grab = pan_camera_grab::PanCameraGrab::new(start_data, button_code);
+                            pointer.set_grab(self, grab, serial, Focus::Clear);
+                            self.niri
+                                .cursor_manager
+                                .set_cursor_image(CursorImageStatus::Named(CursorIcon::Grabbing));
+                            self.niri.queue_redraw_all();
+                            return;
+                        }
+
                         let grab = SpatialMovementGrab::new(start_data, output, ws_id, false);
                         pointer.set_grab(self, grab, serial, Focus::Clear);
                         self.niri

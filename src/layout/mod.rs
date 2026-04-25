@@ -1984,6 +1984,16 @@ impl<W: LayoutElement> Layout<W> {
         workspace.zoom_camera(factor);
     }
 
+    /// Drag-to-pan the active workspace's canvas by a screen-space pointer delta. See
+    /// [`Workspace::drag_pan_canvas`]. Returns `true` if a pan was applied (workspace is in
+    /// canvas mode).
+    pub fn drag_pan_active_canvas(&mut self, screen_delta: Point<f64, Logical>) -> bool {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return false;
+        };
+        workspace.drag_pan_canvas(screen_delta)
+    }
+
     pub fn focus_column_first(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;

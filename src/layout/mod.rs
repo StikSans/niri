@@ -1975,6 +1975,15 @@ impl<W: LayoutElement> Layout<W> {
         workspace.pan_camera(dx, dy);
     }
 
+    /// Multiply the canvas-mode camera zoom on the active workspace by `factor` (around the
+    /// viewport center). No-op outside canvas mode.
+    pub fn zoom_camera(&mut self, factor: f64) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.zoom_camera(factor);
+    }
+
     pub fn focus_column_first(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;

@@ -384,6 +384,15 @@ pub enum Action {
         /// Vertical offset to add to the camera position.
         dy: f64,
     },
+    /// Multiply the 2D canvas-mode camera zoom by `factor`.
+    ///
+    /// `factor > 1.0` zooms in (tiles look bigger), `< 1.0` zooms out (more canvas visible).
+    /// The zoom is applied around the viewport's center so the canvas point at the center stays
+    /// in place. Clamped to a sensible range; no-op outside canvas mode.
+    ZoomCanvas {
+        /// Multiplicative zoom factor; must be positive.
+        factor: f64,
+    },
     /// Focus the window below or the column to the left.
     FocusWindowDownOrColumnLeft {},
     /// Focus the window below or the column to the right.

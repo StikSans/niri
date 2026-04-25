@@ -485,6 +485,12 @@ enum Op {
         #[proptest(strategy = "-500f64..=500f64")]
         dy: f64,
     },
+    ZoomCanvas {
+        // Range chosen to exercise both zoom-in and zoom-out and to push against the clamp at
+        // MIN_VIEW_ZOOM / MAX_VIEW_ZOOM after a few accumulated calls.
+        #[proptest(strategy = "0.25f64..=4.0f64")]
+        factor: f64,
+    },
     ToggleCanvasMode,
     FocusWindowDownOrColumnLeft,
     FocusWindowDownOrColumnRight,
@@ -1147,6 +1153,7 @@ impl Op {
                 layout.focus_spatial(SpatialDirection::Down);
             }
             Op::PanCamera { dx, dy } => layout.pan_camera(dx, dy),
+            Op::ZoomCanvas { factor } => layout.zoom_camera(factor),
             Op::ToggleCanvasMode => layout.toggle_canvas_mode(),
             Op::FocusWindowDownOrColumnLeft => layout.focus_down_or_left(),
             Op::FocusWindowDownOrColumnRight => layout.focus_down_or_right(),
@@ -1776,6 +1783,7 @@ fn operations_dont_panic() {
         Op::MoveWorkspaceToOutput(1),
         Op::ToggleColumnTabbedDisplay,
         Op::ToggleCanvasMode,
+        Op::ZoomCanvas { factor: 1.5 },
     ];
 
     for third in &every_op {
@@ -1959,6 +1967,7 @@ fn operations_from_starting_state_dont_panic() {
         Op::ConsumeOrExpelWindowRight { id: None },
         Op::ToggleColumnTabbedDisplay,
         Op::ToggleCanvasMode,
+        Op::ZoomCanvas { factor: 1.5 },
     ];
 
     for third in &every_op {
@@ -4383,6 +4392,69 @@ mod canvas_space_tests {
         assert!(!space.are_animations_ongoing());
         assert!((space.view_pos_x() - 42.).abs() < 1e-9);
         assert!((space.view_pos_y() - 99.).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zoom_camera_multiplies_target_zoom() {
+        let mut space = make_space();
+        assert!((space.view_zoom() - 1.0).abs() < 1e-9);
+        space.zoom_camera(2.0);
+        assert!((space.target_view_zoom() - 2.0).abs() < 1e-9);
+        space.zoom_camera(0.5);
+        assert!((space.target_view_zoom() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zoom_camera_clamps_to_bounds() {
+        use crate::layout::canvas_space::{MAX_VIEW_ZOOM, MIN_VIEW_ZOOM};
+        let mut space = make_space();
+        // Push past the upper bound.
+        space.zoom_camera(1000.0);
+        assert!((space.target_view_zoom() - MAX_VIEW_ZOOM).abs() < 1e-9);
+        // Push past the lower bound.
+        space.set_view_zoom(1.0);
+        space.zoom_camera(0.0001);
+        assert!((space.target_view_zoom() - MIN_VIEW_ZOOM).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zoom_camera_ignores_invalid_factor() {
+        let mut space = make_space();
+        // Zero, negative, NaN, infinity must all be no-ops.
+        space.zoom_camera(0.);
+        assert!((space.target_view_zoom() - 1.0).abs() < 1e-9);
+        space.zoom_camera(-1.5);
+        assert!((space.target_view_zoom() - 1.0).abs() < 1e-9);
+        space.zoom_camera(f64::NAN);
+        assert!((space.target_view_zoom() - 1.0).abs() < 1e-9);
+        space.zoom_camera(f64::INFINITY);
+        assert!((space.target_view_zoom() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zoom_camera_pins_canvas_point_at_viewport_center() {
+        // After zooming, the canvas point under the screen center should not move. With
+        // tile_at_center pre-zoom == view_pos + view_size / (2 * zoom), and the same equation
+        // post-zoom, the constraint is "same canvas point at center" — so we read center_canvas
+        // before and after and compare.
+        let mut space = make_space();
+        space.set_view_pos(Point::from((1000., 500.)));
+        space.set_view_zoom(1.0);
+        let center_x_before = space.view_pos_x() + VIEW_W * 0.5;
+        let center_y_before = space.view_pos_y() + VIEW_H * 0.5;
+        // Use a large factor to exercise the math; bypass animation by reading targets.
+        space.zoom_camera(2.0);
+        let zoom_after = space.target_view_zoom();
+        let center_x_after = space.target_view_pos_x() + VIEW_W * 0.5 / zoom_after;
+        let center_y_after = space.target_view_pos_y() + VIEW_H * 0.5 / zoom_after;
+        assert!(
+            (center_x_before - center_x_after).abs() < 1e-6,
+            "center x drifted: {center_x_before} -> {center_x_after}",
+        );
+        assert!(
+            (center_y_before - center_y_after).abs() < 1e-6,
+            "center y drifted: {center_y_before} -> {center_y_after}",
+        );
     }
 
     #[test]

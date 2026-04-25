@@ -458,3 +458,14 @@ binds {
     Mod+Alt+Shift+J { pan-camera    0.0  200.0; }
 }
 ```
+
+##### `zoom-canvas`
+
+Multiplicatively zoom the 2D canvas-mode camera by `factor` around the viewport center. `factor > 1.0` zooms in (tiles look bigger); `factor < 1.0` zooms out (more canvas visible). The canvas point under the screen center is pinned during the zoom, so pressing in/out keys feels like a magnifier rather than a teleport. The effective zoom is clamped to the range `[0.1, 10.0]`. No-op outside canvas mode.
+
+```kdl
+binds {
+    Mod+Equal { zoom-canvas 1.25; }
+    Mod+Minus { zoom-canvas 0.8;  }
+}
+```

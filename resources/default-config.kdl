@@ -501,6 +501,12 @@ binds {
     // Mod+Alt+Shift+K { pan-camera    0.0 -200.0; }
     // Mod+Alt+Shift+J { pan-camera    0.0  200.0; }
 
+    // Zoom the canvas camera around the viewport center. factor > 1 zooms in (tiles look
+    // bigger), factor < 1 zooms out (more canvas visible). Clamped to [0.1, 10]. The factor
+    // is multiplicative — bind two opposite values for in/out keys.
+    // Mod+Equal   { zoom-canvas 1.25; }
+    // Mod+Minus   { zoom-canvas 0.8;  }
+
     // You can bind mouse wheel scroll ticks using the following syntax.
     // These binds will change direction based on the natural-scroll setting.
     //

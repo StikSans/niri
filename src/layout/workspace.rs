@@ -1230,6 +1230,14 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    /// Multiply the canvas camera zoom by `factor` (around the viewport center). No-op when not
+    /// in canvas mode — scrolling mode has no zoom concept.
+    pub fn zoom_camera(&mut self, factor: f64) {
+        if self.canvas_mode {
+            self.canvas.zoom_camera(factor);
+        }
+    }
+
     pub fn focus_down_or_left(&mut self) {
         if self.floating_is_active.get() {
             self.floating.focus_down();
@@ -2195,16 +2203,18 @@ impl<W: LayoutElement> Workspace<W> {
     ///
     /// The caller should pass the tile's drop top-left within the workspace (i.e. already
     /// adjusted for the DnD grab-offset via `InteractiveMoveData::tile_drop_location`); this
-    /// function just rebases it into canvas coordinates by adding the current camera position.
-    /// Passing the raw pointer position instead would make dropped tiles jump by the grab-offset.
+    /// function rebases it into canvas coordinates by undoing the camera zoom and adding the
+    /// camera position. Passing the raw pointer position instead would make dropped tiles jump
+    /// by the grab-offset.
     pub(super) fn canvas_insert_position(
         &self,
         tile_top_left_within_workspace: Point<f64, Logical>,
     ) -> Point<f64, super::Canvas> {
         let view = self.canvas.view_pos();
+        let zoom = self.canvas.view_zoom();
         Point::from((
-            view.x + tile_top_left_within_workspace.x,
-            view.y + tile_top_left_within_workspace.y,
+            view.x + tile_top_left_within_workspace.x / zoom,
+            view.y + tile_top_left_within_workspace.y / zoom,
         ))
     }
 

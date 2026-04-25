@@ -37,6 +37,14 @@ niri_render_elements! {
     }
 }
 
+/// Lower bound on the canvas camera zoom. Below this the contents would be unusably small and
+/// hit-testing precision degrades (we'd be scaling pointer coordinates by ~10x).
+pub const MIN_VIEW_ZOOM: f64 = 0.1;
+
+/// Upper bound on the canvas camera zoom. Above this the visible canvas region shrinks below a
+/// single tile and panning becomes very jumpy in screen space.
+pub const MAX_VIEW_ZOOM: f64 = 10.0;
+
 /// Per-render/hit-test override that replaces the canvas camera with a synthetic view that fits
 /// the populated content bounding box into the workspace view rect.
 ///
@@ -66,6 +74,11 @@ pub struct CanvasSpace<W: LayoutElement> {
 
     /// Vertical camera position (absolute canvas-space Y of the viewport's top edge).
     view_offset_y: AxisCamera,
+
+    /// Camera zoom — multiplier from canvas-space to logical screen-space. 1.0 means "1 logical
+    /// pixel of tile = 1 logical pixel on screen". Larger means zoomed in (tiles look bigger);
+    /// smaller means zoomed out (more of the canvas visible).
+    view_zoom: AxisCamera,
 
     /// View size for this space.
     view_size: Size<f64, Logical>,
@@ -133,6 +146,7 @@ impl<W: LayoutElement> CanvasSpace<W> {
             active_id: None,
             view_offset_x: AxisCamera::Static(0.),
             view_offset_y: AxisCamera::Static(0.),
+            view_zoom: AxisCamera::Static(1.0),
             view_size,
             working_area,
             scale,
@@ -306,18 +320,40 @@ impl<W: LayoutElement> CanvasSpace<W> {
         let active = self.active_id.clone();
         match overview {
             None => {
-                for (tile, tile_pos) in self.visible_tiles_with_render_positions() {
-                    let focus_ring = focus_ring && Some(tile.window().id()) == active.as_ref();
-                    let xray_pos = xray_pos.offset(tile_pos);
-                    tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
-                        push(elem.into())
-                    });
+                let zoom = self.view_zoom();
+                if (zoom - 1.0).abs() < f64::EPSILON {
+                    // Fast path: no zoom, render tiles natively without per-element wrapping.
+                    for (tile, tile_pos) in self.visible_tiles_with_render_positions() {
+                        let focus_ring = focus_ring && Some(tile.window().id()) == active.as_ref();
+                        let xray_pos = xray_pos.offset(tile_pos);
+                        tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
+                            push(elem.into())
+                        });
+                    }
+                } else {
+                    // Zoomed path mirrors the overview branch: scale tile positions by zoom and
+                    // wrap each render element in a RescaleRenderElement around the scaled
+                    // anchor so the visuals shrink/grow with the camera zoom.
+                    for (tile, tile_pos) in self.visible_tiles_with_render_positions() {
+                        let focus_ring = focus_ring && Some(tile.window().id()) == active.as_ref();
+                        let xray_pos = xray_pos.offset(tile_pos);
+                        let anchor = tile_pos.to_physical_precise_round(self.scale);
+                        tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
+                            let elem = RescaleRenderElement::from_element(elem, anchor, zoom);
+                            let elem = RelocateRenderElement::from_element(
+                                elem,
+                                Point::default(),
+                                Relocate::Relative,
+                            );
+                            push(elem.into());
+                        });
+                    }
                 }
             }
             Some(fit) => {
                 for tile in &self.tiles {
                     let focus_ring = focus_ring && Some(tile.window().id()) == active.as_ref();
-                    let base = Self::canvas_to_screen_base(tile.canvas_pos(), fit.view_pos)
+                    let base = Self::canvas_to_screen_base(tile.canvas_pos(), fit.view_pos, 1.0)
                         + tile.render_offset();
                     let tile_pos =
                         Point::<f64, Logical>::from((base.x * fit.scale, base.y * fit.scale));
@@ -361,6 +397,7 @@ impl<W: LayoutElement> CanvasSpace<W> {
         // Stop camera animations so the tile doesn't slide out from under the cursor.
         self.view_offset_x = AxisCamera::Static(self.view_offset_x.current());
         self.view_offset_y = AxisCamera::Static(self.view_offset_y.current());
+        self.view_zoom = AxisCamera::Static(self.view_zoom.current());
 
         true
     }
@@ -582,13 +619,18 @@ impl<W: LayoutElement> CanvasSpace<W> {
         let scale = self.scale;
         match overview {
             None => {
+                // Hit-test in un-scaled canvas-space: divide the hit point by camera zoom and
+                // compare against un-scaled tile rects anchored at (canvas_pos - view_pos)
+                // (mirroring the overview branch trick). At zoom 1.0 this is a no-op.
                 let view_pos = self.view_pos();
+                let zoom = self.view_zoom();
+                let point_unscaled = Point::<f64, Logical>::from((point.x / zoom, point.y / zoom));
                 for tile in self.tiles.iter().rev() {
-                    let tile_pos = Self::canvas_to_screen_base(tile.canvas_pos(), view_pos)
+                    let tile_pos = Self::canvas_to_screen_base(tile.canvas_pos(), view_pos, 1.0)
                         + tile.render_offset();
                     let tile_pos = tile_pos.to_physical_precise_round(scale).to_logical(scale);
 
-                    if let Some(rv) = HitType::hit_tile(tile, tile_pos, point) {
+                    if let Some(rv) = HitType::hit_tile(tile, tile_pos, point_unscaled) {
                         return Some(rv);
                     }
                 }
@@ -600,8 +642,9 @@ impl<W: LayoutElement> CanvasSpace<W> {
                 let point_unscaled =
                     Point::<f64, Logical>::from((point.x / fit.scale, point.y / fit.scale));
                 for tile in self.tiles.iter().rev() {
-                    let tile_pos = Self::canvas_to_screen_base(tile.canvas_pos(), fit.view_pos)
-                        + tile.render_offset();
+                    let tile_pos =
+                        Self::canvas_to_screen_base(tile.canvas_pos(), fit.view_pos, 1.0)
+                            + tile.render_offset();
                     if let Some(rv) = HitType::hit_tile(tile, tile_pos, point_unscaled) {
                         return Some(rv);
                     }
@@ -682,6 +725,16 @@ impl<W: LayoutElement> CanvasSpace<W> {
         assert!(self.scale > 0.);
         assert!(self.scale.is_finite());
 
+        let zoom = self.view_zoom();
+        assert!(
+            zoom.is_finite() && zoom > 0.,
+            "view_zoom must be positive and finite"
+        );
+        assert!(
+            (MIN_VIEW_ZOOM - 1e-9..=MAX_VIEW_ZOOM + 1e-9).contains(&zoom),
+            "view_zoom {zoom} outside [{MIN_VIEW_ZOOM}, {MAX_VIEW_ZOOM}]",
+        );
+
         for tile in &self.tiles {
             assert!(Rc::ptr_eq(&self.options, tile.options()));
             assert_eq!(self.view_size, tile.view_size());
@@ -714,15 +767,17 @@ impl<W: LayoutElement> CanvasSpace<W> {
         self.tiles.iter().map(|tile| (tile, tile.canvas_pos()))
     }
 
-    /// Iterate over tiles with screen-space positions: canvas_pos minus camera, then rounded.
+    /// Iterate over tiles with screen-space positions: canvas_pos minus camera, scaled by the
+    /// camera zoom, then rounded.
     pub fn tiles_with_render_positions(
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> + '_ {
         let view_pos = self.view_pos();
+        let zoom = self.view_zoom();
         let scale = self.scale;
         self.tiles.iter().map(move |tile| {
-            let pos =
-                Self::canvas_to_screen_base(tile.canvas_pos(), view_pos) + tile.render_offset();
+            let pos = Self::canvas_to_screen_base(tile.canvas_pos(), view_pos, zoom)
+                + tile.render_offset();
             let pos = pos.to_physical_precise_round(scale).to_logical(scale);
             (tile, pos)
         })
@@ -737,16 +792,20 @@ impl<W: LayoutElement> CanvasSpace<W> {
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> + '_ {
         let view_pos = self.view_pos();
         let view_size = self.view_size;
+        let zoom = self.view_zoom();
         let scale = self.scale;
         self.tiles.iter().filter_map(move |tile| {
-            let screen =
-                Self::canvas_to_screen_base(tile.canvas_pos(), view_pos) + tile.render_offset();
-            let size = tile.tile_size();
+            let screen = Self::canvas_to_screen_base(tile.canvas_pos(), view_pos, zoom)
+                + tile.render_offset();
+            // Tile's on-screen extent factors in zoom: a tile that's `tile_size.w` logical pixels
+            // wide takes `tile_size.w * zoom` screen pixels at zoom level `zoom`.
+            let size_w = tile.tile_size().w * zoom;
+            let size_h = tile.tile_size().h * zoom;
             // AABB intersection with the view rect at origin. Tiles sharing an edge with the view
             // (e.g. tile_right == 0) are treated as off-screen so we don't pay for their render
             // elements. Overlap by even a sub-pixel keeps the tile alive.
-            if screen.x + size.w <= 0.0
-                || screen.y + size.h <= 0.0
+            if screen.x + size_w <= 0.0
+                || screen.y + size_h <= 0.0
                 || screen.x >= view_size.w
                 || screen.y >= view_size.h
             {
@@ -766,10 +825,11 @@ impl<W: LayoutElement> CanvasSpace<W> {
         round: bool,
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
         let view_pos = self.view_pos();
+        let zoom = self.view_zoom();
         let scale = self.scale;
         self.tiles.iter_mut().map(move |tile| {
-            let pos =
-                Self::canvas_to_screen_base(tile.canvas_pos(), view_pos) + tile.render_offset();
+            let pos = Self::canvas_to_screen_base(tile.canvas_pos(), view_pos, zoom)
+                + tile.render_offset();
             let pos = if round {
                 pos.to_physical_precise_round(scale).to_logical(scale)
             } else {
@@ -780,11 +840,17 @@ impl<W: LayoutElement> CanvasSpace<W> {
     }
 
     /// Transform a canvas-space point into static screen-space (no per-tile animation offsets).
+    /// `zoom` is the camera zoom multiplier — pass `1.0` for un-scaled coordinates (e.g. inside
+    /// the overview-fit path where the fit handles its own scaling).
     pub(super) fn canvas_to_screen_base(
         canvas: Point<f64, Canvas>,
         view_pos: Point<f64, Canvas>,
+        zoom: f64,
     ) -> Point<f64, Logical> {
-        Point::<f64, Logical>::from((canvas.x - view_pos.x, canvas.y - view_pos.y))
+        Point::<f64, Logical>::from((
+            (canvas.x - view_pos.x) * zoom,
+            (canvas.y - view_pos.y) * zoom,
+        ))
     }
 
     // --- camera ---
@@ -857,6 +923,65 @@ impl<W: LayoutElement> CanvasSpace<W> {
         if dy != 0. {
             self.animate_view_pos_y(self.view_offset_y.target() + dy);
         }
+    }
+
+    /// Current camera zoom (live during animation).
+    pub fn view_zoom(&self) -> f64 {
+        self.view_zoom.current()
+    }
+
+    /// Target camera zoom (the value an in-flight animation is heading toward).
+    pub fn target_view_zoom(&self) -> f64 {
+        self.view_zoom.target()
+    }
+
+    /// Jumps the zoom to `zoom` without animation. Clamped to `[MIN_VIEW_ZOOM, MAX_VIEW_ZOOM]`.
+    pub fn set_view_zoom(&mut self, zoom: f64) {
+        let zoom = zoom.clamp(MIN_VIEW_ZOOM, MAX_VIEW_ZOOM);
+        self.view_zoom = AxisCamera::Static(zoom);
+    }
+
+    /// Animate the zoom toward `new_zoom` (clamped). Reuses the horizontal-view-movement spring
+    /// so it feels consistent with `pan_camera`.
+    pub fn animate_view_zoom(&mut self, new_zoom: f64) {
+        let new_zoom = new_zoom.clamp(MIN_VIEW_ZOOM, MAX_VIEW_ZOOM);
+        if self.view_zoom.target() == new_zoom {
+            return;
+        }
+        let config = self.options.animations.horizontal_view_movement.0;
+        self.view_zoom = AxisCamera::Animation(Animation::new(
+            self.clock.clone(),
+            self.view_zoom.current(),
+            new_zoom,
+            0.,
+            config,
+        ));
+    }
+
+    /// Multiply the target zoom by `factor` (must be > 0), zooming around the viewport's center
+    /// so the canvas point currently at the center stays put. `factor > 1` zooms in, `< 1` zooms
+    /// out. Clamped to `[MIN_VIEW_ZOOM, MAX_VIEW_ZOOM]`.
+    pub fn zoom_camera(&mut self, factor: f64) {
+        if !(factor.is_finite() && factor > 0.) {
+            return;
+        }
+        let old_zoom = self.view_zoom.target();
+        let new_zoom = (old_zoom * factor).clamp(MIN_VIEW_ZOOM, MAX_VIEW_ZOOM);
+        if new_zoom == old_zoom {
+            return;
+        }
+        // Pin the canvas point currently at the viewport center: keep the same canvas point
+        // visible at screen center after the zoom changes.
+        //   center_canvas = view_pos + view_size / (2 * zoom)
+        // Solving for the new view_pos that keeps center_canvas constant:
+        //   view_pos_new = view_pos + view_size / 2 * (1/old - 1/new)
+        let half_w = self.view_size.w * 0.5;
+        let half_h = self.view_size.h * 0.5;
+        let new_view_x = self.view_offset_x.target() + half_w * (1. / old_zoom - 1. / new_zoom);
+        let new_view_y = self.view_offset_y.target() + half_h * (1. / old_zoom - 1. / new_zoom);
+        self.animate_view_zoom(new_zoom);
+        self.animate_view_pos_x(new_view_x);
+        self.animate_view_pos_y(new_view_y);
     }
 
     /// Fits the active tile into view on both axes (only pans where needed).
@@ -996,6 +1121,11 @@ impl<W: LayoutElement> CanvasSpace<W> {
                 self.view_offset_y = AxisCamera::Static(anim.to());
             }
         }
+        if let AxisCamera::Animation(anim) = &self.view_zoom {
+            if anim.is_done() {
+                self.view_zoom = AxisCamera::Static(anim.to());
+            }
+        }
         for tile in &mut self.tiles {
             tile.advance_animations();
         }
@@ -1008,6 +1138,7 @@ impl<W: LayoutElement> CanvasSpace<W> {
     pub fn are_animations_ongoing(&self) -> bool {
         self.view_offset_x.is_animation_ongoing()
             || self.view_offset_y.is_animation_ongoing()
+            || self.view_zoom.is_animation_ongoing()
             || self.tiles.iter().any(Tile::are_animations_ongoing)
             || !self.closing_windows.is_empty()
     }
@@ -1015,6 +1146,7 @@ impl<W: LayoutElement> CanvasSpace<W> {
     pub fn are_transitions_ongoing(&self) -> bool {
         !self.view_offset_x.is_static()
             || !self.view_offset_y.is_static()
+            || !self.view_zoom.is_static()
             || self.tiles.iter().any(Tile::are_transitions_ongoing)
             || !self.closing_windows.is_empty()
     }
@@ -1022,6 +1154,10 @@ impl<W: LayoutElement> CanvasSpace<W> {
     pub fn update_render_elements(&mut self, is_active: bool) {
         let view_pos = self.view_pos();
         let view_size = self.view_size;
+        let zoom = self.view_zoom();
+        // Tile damage tracking is in the tile's own logical pixels; with camera zoom the visible
+        // chunk of canvas-space inside the screen viewport spans `view_size / zoom` per axis.
+        let tile_view_size = Size::<f64, Logical>::from((view_size.w / zoom, view_size.h / zoom));
         let active_id = self.active_id.clone();
         for tile in &mut self.tiles {
             let tile_active = is_active && active_id.as_ref() == Some(tile.window().id());
@@ -1031,7 +1167,7 @@ impl<W: LayoutElement> CanvasSpace<W> {
                     view_pos.x - tile_canvas.x,
                     view_pos.y - tile_canvas.y,
                 )),
-                view_size,
+                tile_view_size,
             );
             tile.update_render_elements(tile_active, view_rect);
         }

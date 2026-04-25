@@ -5580,3 +5580,77 @@ fn canvas_mode_drag_drop_to_new_workspace_lands_on_canvas() {
     layout.sync_canvas_positions();
     layout.verify_invariants();
 }
+
+#[test]
+fn canvas_mode_drag_drop_preserves_grab_offset() {
+    // Regression test for the bug where a tile dropped on a canvas would jump so that its
+    // top-left landed under the pointer, instead of preserving the grab-offset the user had
+    // while dragging. The tile must end up shifted by *exactly the pointer delta*.
+    let options = Options {
+        layout: niri_config::Layout {
+            canvas_mode: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut layout = Layout::with_options(Clock::with_time(Duration::ZERO), options);
+    Op::AddOutput(1).apply(&mut layout);
+    Op::AddWindow {
+        params: TestWindowParams::new(7),
+    }
+    .apply(&mut layout);
+    layout.refresh(true);
+    layout.sync_canvas_positions();
+
+    // Snapshot canvas_pos before the drag.
+    let (_, _, ws) = layout
+        .workspaces()
+        .find(|(_, _, ws)| ws.canvas().has_window(&7))
+        .unwrap();
+    let (_, canvas_before) = ws.canvas().tiles_with_canvas_positions().next().unwrap();
+
+    // Grab at (50, 100) — inside the default 100x200 test tile, NOT at its top-left — then
+    // pan the pointer by (300, 300) so the drag crosses the 256px threshold that promotes
+    // Starting → Moving. Drop happens at the update's (px, py).
+    Op::InteractiveMoveBegin {
+        window: 7,
+        output_idx: 1,
+        px: 50.,
+        py: 100.,
+    }
+    .apply(&mut layout);
+    Op::InteractiveMoveUpdate {
+        window: 7,
+        dx: 300.,
+        dy: 300.,
+        output_idx: 1,
+        px: 350.,
+        py: 400.,
+    }
+    .apply(&mut layout);
+    Op::InteractiveMoveEnd { window: 7 }.apply(&mut layout);
+    layout.sync_canvas_positions();
+
+    let (_, _, ws) = layout
+        .workspaces()
+        .find(|(_, _, ws)| ws.canvas().has_window(&7))
+        .unwrap();
+    let (_, canvas_after) = ws.canvas().tiles_with_canvas_positions().next().unwrap();
+
+    let dx = canvas_after.x - canvas_before.x;
+    let dy = canvas_after.y - canvas_before.y;
+
+    // The tile should move by the pointer delta (300, 300). If canvas_insert_position used
+    // the raw pointer (buggy old behavior), the delta would include the grab-offset of
+    // (50, 100) — i.e. the tile would jump an extra (50, 100).
+    assert!(
+        (dx - 300.).abs() < 1.0,
+        "x shift should be 300 (pointer delta), got {dx}"
+    );
+    assert!(
+        (dy - 300.).abs() < 1.0,
+        "y shift should be 300 (pointer delta), got {dy}"
+    );
+
+    layout.verify_invariants();
+}

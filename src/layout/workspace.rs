@@ -2193,16 +2193,18 @@ impl<W: LayoutElement> Workspace<W> {
 
     /// Translate a workspace-local logical point to a canvas-space top-left for a dropped tile.
     ///
-    /// Camera (`view_pos`) plus the local cursor position yields the world-space point under the
-    /// cursor; that becomes the tile's canvas origin on drop.
+    /// The caller should pass the tile's drop top-left within the workspace (i.e. already
+    /// adjusted for the DnD grab-offset via `InteractiveMoveData::tile_drop_location`); this
+    /// function just rebases it into canvas coordinates by adding the current camera position.
+    /// Passing the raw pointer position instead would make dropped tiles jump by the grab-offset.
     pub(super) fn canvas_insert_position(
         &self,
-        pos_within_workspace: Point<f64, Logical>,
+        tile_top_left_within_workspace: Point<f64, Logical>,
     ) -> Point<f64, super::Canvas> {
         let view = self.canvas.view_pos();
         Point::from((
-            view.x + pos_within_workspace.x,
-            view.y + pos_within_workspace.y,
+            view.x + tile_top_left_within_workspace.x,
+            view.y + tile_top_left_within_workspace.y,
         ))
     }
 

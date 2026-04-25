@@ -613,6 +613,22 @@ impl<W: LayoutElement> InteractiveMoveData<W> {
         // Round to physical pixels.
         pos.to_physical_precise_round(scale).to_logical(scale)
     }
+
+    /// Tile top-left for drop landing — same as `tile_render_location` but excludes the
+    /// tile's transient `render_offset` (which is non-zero mid-animation right after the
+    /// Starting → Moving transition runs `animate_move_from`). Using it for drops keeps
+    /// the dropped tile under the pointer's grab spot regardless of animation phase.
+    fn tile_drop_location(&self, zoom: f64) -> Point<f64, Logical> {
+        let scale = Scale::from(self.output.current_scale().fractional_scale());
+        let window_size = self.tile.window_size();
+        let pointer_offset_within_window = Point::from((
+            window_size.w * self.pointer_ratio_within_window.0,
+            window_size.h * self.pointer_ratio_within_window.1,
+        ));
+        let pos = self.pointer_pos_within_output
+            - (pointer_offset_within_window + self.tile.window_loc()).upscale(zoom);
+        pos.to_physical_precise_round(scale).to_logical(scale)
+    }
 }
 
 impl ActivateWindow {
@@ -2891,14 +2907,18 @@ impl<W: LayoutElement> Layout<W> {
                         .iter_mut()
                         .find(|ws| ws.id() == ws_id)
                         .unwrap();
-                    let pos_within_workspace =
+                    let pointer_pos_within_workspace =
                         (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
                     let position = if move_.is_floating {
                         InsertPosition::Floating
                     } else if ws.is_canvas_mode() {
-                        InsertPosition::Canvas(ws.canvas_insert_position(pos_within_workspace))
+                        // Match the drop path: hint preview uses the tile's drop top-left,
+                        // so the insert indicator sits exactly where the tile will land.
+                        let tile_pos_within_workspace =
+                            (move_.tile_drop_location(zoom) - geo.loc).downscale(zoom);
+                        InsertPosition::Canvas(ws.canvas_insert_position(tile_pos_within_workspace))
                     } else {
-                        ws.scrolling_insert_position(pos_within_workspace)
+                        ws.scrolling_insert_position(pointer_pos_within_workspace)
                     };
 
                     let border_width = move_.tile.effective_border_width().unwrap_or(0.);
@@ -4212,15 +4232,22 @@ impl<W: LayoutElement> Layout<W> {
                             let position = if move_.is_floating {
                                 InsertPosition::Floating
                             } else {
-                                let pos_within_workspace =
+                                // Canvas drops should land the tile's top-left where the user
+                                // released it (grab-offset-aware, animation-independent);
+                                // scrolling insert hit-tests on the pointer, so it stays
+                                // pointer-based.
+                                let tile_drop_loc = move_.tile_drop_location(zoom);
+                                let tile_pos_within_workspace =
+                                    (tile_drop_loc - geo.loc).downscale(zoom);
+                                let pointer_pos_within_workspace =
                                     (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
                                 let ws = &mut mon.workspaces[ws_idx];
                                 if ws.is_canvas_mode() {
                                     InsertPosition::Canvas(
-                                        ws.canvas_insert_position(pos_within_workspace),
+                                        ws.canvas_insert_position(tile_pos_within_workspace),
                                     )
                                 } else {
-                                    ws.scrolling_insert_position(pos_within_workspace)
+                                    ws.scrolling_insert_position(pointer_pos_within_workspace)
                                 }
                             };
 
